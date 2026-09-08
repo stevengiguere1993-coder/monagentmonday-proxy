@@ -173,11 +173,15 @@ def test_traditionnel_conventionnel():
     assert p0["revenus"] == 100_000.0
     assert abs(p1["revenus"] - 103_000.0) < 0.01
 
-    # Refi : argent dégagé = prêt max − solde retenu − BV, et le best
-    # est le max.
+    # Refi (définition Phil 2026-09-02) : argent dégagé = prêt max −
+    # TOTAL DÉPENSÉ (prix + frais), et le best est le max.
+    assert abs(
+        t["total_depense"]
+        - (1_000_000 + t["frais_demarrage_total"])
+    ) < 0.01
     for v in t["refi"].values():
         assert abs(
-            (v["financement"] - t["solde_retenu_an_h"])
+            (v["financement"] - t["total_depense"])
             - v["equite_a_la_fin"]
         ) < 0.01
     best = t["best_refi"]
@@ -185,6 +189,41 @@ def test_traditionnel_conventionnel():
         best["argent_dispo"]
         - max(v["equite_a_la_fin"] for v in t["refi"].values())
     ) < 0.01
+
+    # Cohérence tableau haut/bas : à l'an H, la projection reprend les
+    # dépenses de la colonne de référence.
+    ref = t["refi"][t["best_refi"]["key"]]
+    p_h = next(
+        x for x in t["projection"] if x["annee"] == t["horizon"]
+    )
+    assert abs(p_h["depenses"] - ref["depenses_total"]) < 0.01
+    assert abs(p_h["revenus"] - ref["revenus_totaux"]) < 0.01
+
+
+def test_traditionnel_programme_auto_et_financables():
+    """Sans choix explicite, le programme retenu = celui au PRÊT LE
+    PLUS ÉLEVÉ ; un poste coché finançable en trad sort du cash."""
+    r = compute_all(
+        _inputs(strategie="traditionnel"), use_aph_select=False
+    )
+    t = r.to_dict()["traditionnel"]
+    prets = {k: v["financement"] for k, v in t["achat"].items()}
+    assert t["programme_retenu"] == max(prets, key=lambda k: prets[k])
+    assert t["programme_retenu"] == t["programme_retenu_auto"]
+    # Défaut : rien de finançable → cash = total.
+    assert t["frais_demarrage_cash"] == t["frais_demarrage_total"]
+
+    r2 = compute_all(
+        _inputs(
+            strategie="traditionnel",
+            frais_demarrage_financables=["notaire"],
+        ),
+        use_aph_select=False,
+    )
+    t2 = r2.to_dict()["traditionnel"]
+    attendu = t2["frais_demarrage_total"] - t2["frais_demarrage"]["notaire"]
+    assert abs(t2["frais_demarrage_cash"] - attendu) < 0.01
+    assert t2["mdf_cash"] < t["mdf_cash"]
 
 
 def test_traditionnel_alias_et_aph():

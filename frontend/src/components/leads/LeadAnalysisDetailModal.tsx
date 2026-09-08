@@ -1289,6 +1289,7 @@ export function LeadAnalysisDetailModal({
                     return trad ? (
                       <TraditionnelAchatPanel
                         t={trad}
+                        programmeChoisi={data.programme_achat ?? null}
                         onPatchField={patchField}
                       />
                     ) : (
@@ -3038,6 +3039,47 @@ function ManualAnalysisSection({
             onSave={(json) => onPatch("unites_json", json)}
           />
         ) : null}
+
+        {/* Composition de la mise de fonds — c'est de la SAISIE
+            (montants modifiables + coches finançables), donc dans
+            l'onglet Analyse (retour Phil 2026-09-02). Les deux modes
+            partagent le même tableau. */}
+        {(() => {
+          if (!data.analysis_results_json) return null;
+          let res: AnalysisResults | null = null;
+          try {
+            res = JSON.parse(
+              data.analysis_results_json
+            ) as AnalysisResults;
+          } catch {
+            res = null;
+          }
+          if (!res) return null;
+          const trad = res.traditionnel;
+          return (
+            <FraisDemarrageBreakdownPanel
+              data={res}
+              overridesJson={data.frais_demarrage_overrides_json}
+              financablesJson={data.frais_demarrage_financables_json}
+              mdfPct={data.mdf_preteur_b_pct ?? 25}
+              prixAchat={data.asking_price ?? 0}
+              mdfPreteurBDb={data.mdf_preteur_b ?? null}
+              onPatchOverrides={(j) =>
+                onPatch("frais_demarrage_overrides_json", j)
+              }
+              onPatchFinancables={(j) =>
+                onPatch("frais_demarrage_financables_json", j)
+              }
+              mode={trad ? "traditionnel" : "preteur_b"}
+              pretRetenu={trad?.pret_retenu}
+              programmeLabel={
+                trad
+                  ? trad.labels[trad.programme_retenu]
+                  : undefined
+              }
+            />
+          );
+        })()}
       </div>
 
       {err ? (
@@ -3142,6 +3184,7 @@ type DepensesBreakdown = {
   thermopompes: number;
   autres: number;
   autres_normalisations?: number;
+  interets_balance_vente?: number;
 };
 
 type ScenarioResult = {
@@ -3236,6 +3279,9 @@ type AnalysisResults = {
     mdf_par_programme: Record<string, number>;
     refi: Record<string, ScenarioResult | null>;
     projection: ProjPoint[];
+    total_depense?: number;
+    frais_demarrage_cash?: number;
+    programme_retenu_auto?: string;
     meilleur_refi_key?: string;
     best_refi: {
       key: string;
@@ -3346,6 +3392,16 @@ function ProjectionChart({
           </text>
         </g>
       ))}
+      {/* Bande douce AVANT le refi : phase de détention initiale. */}
+      {horizon != null && horizon > a0 && horizon < a1 ? (
+        <rect
+          x={padL}
+          y={padT}
+          width={x(horizon) - padL}
+          height={HT - padT - padB}
+          fill="rgba(255,255,255,0.025)"
+        />
+      ) : null}
       <path d={area} fill="rgba(52,211,153,0.14)" />
       {horizon != null && horizon > a0 && horizon < a1 ? (
         <g>
@@ -3386,16 +3442,27 @@ function ProjectionChart({
       />
       {proj.map((pt) => (
         <g key={pt.annee}>
+          {/* Survol : les trois chiffres de l'année. */}
+          <title>
+            {`An ${pt.annee} — valeur ${fmtMoney(pt.valeur)} · solde ${fmtMoney(pt.solde_pret)} · équité ${fmtMoney(pt.equite)}`}
+          </title>
+          <rect
+            x={x(pt.annee) - 10}
+            y={padT}
+            width={20}
+            height={HT - padT - padB}
+            fill="transparent"
+          />
           <circle
             cx={x(pt.annee)}
             cy={y(pt.valeur)}
-            r="2.4"
+            r="2.6"
             fill="#34d399"
           />
           <circle
             cx={x(pt.annee)}
             cy={y(pt.solde_pret)}
-            r="2"
+            r="2.2"
             fill="#f59e0b"
           />
           <text
@@ -3523,6 +3590,7 @@ function TradColonnes({
   meilleur,
   mdfParProgramme,
   modeRefi,
+  totalDepense,
   onRetenir
 }: {
   cols: Record<string, ScenarioResult | null>;
@@ -3532,6 +3600,9 @@ function TradColonnes({
   meilleur?: string;
   mdfParProgramme?: Record<string, number>;
   modeRefi?: boolean;
+  /** Refi : « Total dépensé » (prêt initial + tout le cash) — même
+   *  valeur pour toutes les colonnes, affichée sous Prêt accordé. */
+  totalDepense?: number;
   /** Achat : bouton « Retenir » par colonne. */
   onRetenir?: (k: string) => void;
 }) {
@@ -3554,7 +3625,12 @@ function TradColonnes({
     ...(modeRefi
       ? [
           {
-            label: "Argent dégagé",
+            label: "Total dépensé (prêt initial + cash)",
+            pick: () => totalDepense,
+            bold: false
+          },
+          {
+            label: "Argent dégagé (prêt − total dépensé)",
             pick: (s: ScenarioResult) => s.equite_a_la_fin,
             bold: true,
             color: true
@@ -3695,98 +3771,17 @@ function RefiReferenceSelect({
   );
 }
 
-/** Composition de la mise de fonds — mode institution traditionnelle :
- *  tous les postes (aucun finançable), balance de vente déduite. */
-function TradMdfComposition({
-  t
-}: {
-  t: NonNullable<AnalysisResults["traditionnel"]>;
-}) {
-  const labels = buildFraisLabels(0.25, null);
-  const frais = t.frais_demarrage || {};
-  const pretRetenu = t.pret_retenu || 0;
-  return (
-    <section className="mt-4 rounded-xl border border-brand-800 bg-brand-950/40 p-4">
-      <div className="flex items-center gap-2.5">
-        <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-amber-500/15 text-amber-300">
-          <Wallet className="h-4 w-4" />
-        </span>
-        <h4 className="text-sm font-bold text-white">
-          Composition de la mise de fonds (cash)
-        </h4>
-      </div>
-      <p className="mt-2 text-[10px] leading-relaxed text-white/50">
-        Achat via une institution traditionnelle : aucun poste
-        n&apos;est finançable — tout se paie cash, sauf la balance de
-        vente qui finance une partie de la mise de fonds.
-      </p>
-      <div className="mt-3 overflow-hidden rounded-lg border border-brand-800">
-        <table className="w-full border-collapse text-[11px]">
-          <tbody className="divide-y divide-brand-800/60">
-            <tr className="border-y border-amber-400/30 bg-amber-500/10">
-              <td className="px-3 py-2 font-semibold text-amber-200">
-                Prix d&apos;achat − prêt retenu (
-                {t.labels[t.programme_retenu]})
-              </td>
-              <td className="px-3 py-2 text-right font-mono font-semibold tabular-nums text-amber-200">
-                {fmtMoney(
-                  Math.max(0, (t.mdf_cash - t.frais_demarrage_total) + t.balance_vente)
-                )}
-              </td>
-            </tr>
-            {t.balance_vente > 0 ? (
-              <tr className="bg-emerald-500/5">
-                <td className="px-3 py-2 text-emerald-300">
-                  Balance de vente (finance la mise de fonds)
-                  {t.interets_bv_annuels > 0
-                    ? ` — intérêts ${fmtMoney(t.interets_bv_annuels)}/an dans les dépenses`
-                    : ""}
-                </td>
-                <td className="px-3 py-2 text-right font-mono tabular-nums text-emerald-300">
-                  − {fmtMoney(t.balance_vente)}
-                </td>
-              </tr>
-            ) : null}
-            <tr>
-              <td
-                className="px-3 pb-1 pt-2.5 text-[9px] font-semibold uppercase tracking-wider text-white/40"
-                colSpan={2}
-              >
-                Frais d&apos;acquisition (tous cash)
-              </td>
-            </tr>
-            {labels
-              .filter(([k]) => (frais[k as string] ?? 0) !== 0)
-              .map(([k, lbl]) => (
-                <tr key={String(k)}>
-                  <td className="px-3 py-1.5 text-white/70">{lbl}</td>
-                  <td className="px-3 py-1.5 text-right font-mono tabular-nums text-white/80">
-                    {fmtMoney(frais[k as string] ?? 0)}
-                  </td>
-                </tr>
-              ))}
-            <tr className="border-t-2 border-amber-400/40 bg-amber-500/10">
-              <td className="px-3 py-2 font-bold text-amber-200">
-                Total — mise de fonds (cash à l&apos;achat)
-              </td>
-              <td className="px-3 py-2 text-right font-mono font-bold tabular-nums text-amber-200">
-                {fmtMoney(t.mdf_cash)}
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
-  );
-}
-
 /** Onglet ACHAT — institution traditionnelle : 4 programmes sur les
  *  loyers actuels, choix du programme retenu, composition de la MDF. */
 function TraditionnelAchatPanel({
   t,
+  programmeChoisi,
   onPatchField
 }: {
   t: NonNullable<AnalysisResults["traditionnel"]>;
+  /** Choix EXPLICITE de la fiche (null = automatique, prêt le plus
+   *  élevé). */
+  programmeChoisi?: string | null;
   onPatchField?: (field: string, value: unknown) => void;
 }) {
   return (
@@ -3816,10 +3811,28 @@ function TraditionnelAchatPanel({
         </div>
       }
     >
+      {onPatchField ? (
+        <RefiReferenceSelect
+          options={[
+            ["conventionnel", t.labels.conventionnel],
+            ["schl_std", t.labels.schl_std],
+            ["aph_50", t.labels.aph_50],
+            ["aph_100", t.labels.aph_100]
+          ]}
+          value={programmeChoisi}
+          meilleurLabel={`prêt le plus élevé : ${
+            t.labels[t.programme_retenu_auto || ""] ||
+            t.programme_retenu_auto ||
+            "—"
+          }`}
+          onChange={(v) => onPatchField("programme_achat", v)}
+        />
+      ) : null}
       <TradColonnes
         cols={t.achat}
         labels={t.labels}
         surligne={t.programme_retenu}
+        meilleur={t.programme_retenu_auto}
         mdfParProgramme={t.mdf_par_programme}
         onRetenir={
           onPatchField
@@ -3828,13 +3841,19 @@ function TraditionnelAchatPanel({
         }
       />
       <p className="mt-2 text-[10px] text-white/40">
-        Frais d&apos;acquisition {fmtMoney(t.frais_demarrage_total)} —
-        sans double courtier/notaire ni intérêts de chantier.
+        ★ = prêt le plus élevé (référence automatique). Frais
+        d&apos;acquisition {fmtMoney(t.frais_demarrage_total)}
+        {t.frais_demarrage_cash != null &&
+        t.frais_demarrage_cash !== t.frais_demarrage_total
+          ? ` (dont ${fmtMoney(t.frais_demarrage_cash)} cash)`
+          : ""}{" "}
+        — sans double courtier/notaire ni intérêts de chantier.
         {t.interets_bv_annuels > 0
           ? ` Intérêts de la balance de vente ${fmtMoney(t.interets_bv_annuels)}/an inclus dans les dépenses.`
-          : ""}
+          : ""}{" "}
+        La composition détaillée de la mise de fonds s&apos;édite dans
+        l&apos;onglet « Analyse ».
       </p>
-      <TradMdfComposition t={t} />
     </SectionCard>
   );
 }
@@ -3940,12 +3959,14 @@ function TraditionnelRefiPanel({
         surligne={best.key}
         meilleur={meilleurKey}
         modeRefi
+        totalDepense={t.total_depense}
       />
       <p className="mt-2 text-[10px] text-white/40">
-        Argent dégagé = prêt max − solde du prêt d&apos;achat (
-        {fmtMoney(t.solde_retenu_an_h)})
-        {t.balance_vente > 0 ? " − balance de vente" : ""}. ★ = le
-        meilleur automatique ; la colonne verte = ta référence.
+        Total dépensé = prêt initial + tout le cash (mise de fonds,
+        frais, balance de vente) = {fmtMoney(t.total_depense)}. Argent
+        dégagé = prêt max − total dépensé : à ce montant remboursé, il
+        ne reste plus 1 $ à nous dans le projet. ★ = le meilleur
+        automatique ; la colonne verte = ta référence.
       </p>
 
       <div className="mt-4">
@@ -4363,16 +4384,8 @@ function AnalysisResultsTable({
         })}
       </div>
 
-      <FraisDemarrageBreakdownPanel
-        data={data}
-        overridesJson={overridesJson}
-        financablesJson={financablesJson}
-        mdfPct={mdfPct}
-        prixAchat={prixAchat}
-        mdfPreteurBDb={mdfPreteurBDb}
-        onPatchOverrides={onPatchOverrides}
-        onPatchFinancables={onPatchFinancables}
-      />
+      {/* Composition de la MDF : déplacée dans l'onglet ANALYSE
+          (retour Phil 2026-09-02 — c'est de la saisie). */}
 
       {/* Projections long terme du mode prêteur B (retour Phil
           2026-09-02 : « tu pourrais aussi le rajouter dans la section
@@ -4471,7 +4484,10 @@ function FraisDemarrageBreakdownPanel({
   prixAchat,
   mdfPreteurBDb,
   onPatchOverrides,
-  onPatchFinancables
+  onPatchFinancables,
+  mode = "preteur_b",
+  pretRetenu,
+  programmeLabel
 }: {
   data: AnalysisResults;
   overridesJson?: string | null;
@@ -4481,14 +4497,23 @@ function FraisDemarrageBreakdownPanel({
   mdfPreteurBDb?: number | null;
   onPatchOverrides?: (json: string) => void;
   onPatchFinancables?: (json: string) => void;
+  /** traditionnel : assise = prix − prêt retenu, finançable = payé
+   *  par l'institution (0 cash), rien de coché par défaut. */
+  mode?: "preteur_b" | "traditionnel";
+  pretRetenu?: number;
+  programmeLabel?: string;
 }) {
+  const estTrad = mode === "traditionnel";
   const frais = data.frais_demarrage;
   const mdfPctFinal = mdfPct ?? data.mdf_preteur_b_pct ?? 25;
   const mdfPctNumeric =
     mdfPctFinal > 1 ? mdfPctFinal / 100 : mdfPctFinal;
   const prixFinal = prixAchat ?? data.prix_achat ?? 0;
-  const mdfPctValue =
-    data.mdf_pct_prix_achat ?? data.mdf_25pct_prix_achat ?? mdfPctNumeric * prixFinal;
+  const mdfPctValue = estTrad
+    ? Math.max(0, prixFinal - (pretRetenu ?? 0))
+    : data.mdf_pct_prix_achat ??
+      data.mdf_25pct_prix_achat ??
+      mdfPctNumeric * prixFinal;
   const mdfTotalStored = mdfPreteurBDb ?? data.mdf_preteur_b ?? null;
 
   const overrides = useMemo<Record<string, number>>(() => {
@@ -4511,8 +4536,8 @@ function FraisDemarrageBreakdownPanel({
         /* ignore */
       }
     }
-    return new Set(DEFAULT_FINANCABLES);
-  }, [financablesJson]);
+    return new Set(estTrad ? [] : DEFAULT_FINANCABLES);
+  }, [financablesJson, estTrad]);
 
   function toggleFinancable(key: string) {
     const next = new Set(financables);
@@ -4659,7 +4684,11 @@ function FraisDemarrageBreakdownPanel({
     const overridden = key !== "" && overrides[key] != null;
     const displayVal = overridden ? Number(overrides[key]) : row.computed;
     const isFin = key !== "" && financables.has(key);
-    const cashForRow = isFin ? displayVal * mdfPctNumeric : displayVal;
+    // Prêteur B : un poste finançable coûte pct en cash ; institution
+    // traditionnelle : financé = roulé dans le prêt, 0 cash.
+    const cashForRow = isFin
+      ? (estTrad ? 0 : displayVal * mdfPctNumeric)
+      : displayVal;
     const pretForRow = isFin ? displayVal - cashForRow : null;
     // Poste fixe nul et non-override → masqué (comme avant). Perso : toujours.
     const hidden = !row.isCustom && !overridden && !row.computed;
@@ -4681,8 +4710,8 @@ function FraisDemarrageBreakdownPanel({
       if (!Number.isFinite(v)) continue;
       subTotalValeur += v;
       if (isFin) {
-        subTotalCash += v * mdfPctNumeric;
-        subTotalFinanced += v * (1 - mdfPctNumeric);
+        subTotalCash += estTrad ? 0 : v * mdfPctNumeric;
+        subTotalFinanced += estTrad ? v : v * (1 - mdfPctNumeric);
       } else {
         subTotalCash += v;
       }
@@ -4704,15 +4733,31 @@ function FraisDemarrageBreakdownPanel({
           <Wallet className="h-4 w-4" />
         </span>
         <h4 className="text-sm font-bold text-white">
-          Composition de la MDF avec prêteur B
+          {estTrad
+            ? "Composition de la mise de fonds (institution traditionnelle)"
+            : "Composition de la MDF avec prêteur B"}
         </h4>
       </div>
       <p className="mt-2 text-[10px] leading-relaxed text-white/50">
-        Total à sortir en cash = {_fmtPctShort(mdfPctNumeric)} du prix
-        d&apos;achat + frais non finançables + {_fmtPctShort(mdfPctNumeric)}
-        {" "}des frais finançables. Coche un poste pour le rendre
-        finançable par le prêteur B (par défaut : rapport efficacité,
-        frais développement, travaux).
+        {estTrad ? (
+          <>
+            Total à sortir en cash = prix d&apos;achat − prêt retenu −
+            balance de vente + frais non finançables. Rien n&apos;est
+            finançable par défaut — coche un poste pour le faire
+            financer par l&apos;institution (roulé dans le prêt).
+            Clique un montant pour le modifier.
+          </>
+        ) : (
+          <>
+            Total à sortir en cash = {_fmtPctShort(mdfPctNumeric)} du
+            prix d&apos;achat − balance de vente + frais non
+            finançables + {_fmtPctShort(mdfPctNumeric)} des frais
+            finançables. Coche un poste pour le rendre finançable par
+            le prêteur B (défaut : rapport efficacité, frais
+            développement, travaux). Clique un montant pour le
+            modifier.
+          </>
+        )}
       </p>
 
       <div className="mt-3 overflow-hidden rounded-lg border border-brand-800">
@@ -4739,36 +4784,43 @@ function FraisDemarrageBreakdownPanel({
           <tbody>
             {/* Ligne de base : assise de la MDF, mise en évidence (ambre) */}
             <tr className="border-y border-amber-400/30 bg-amber-500/10">
-              <td className="px-3 py-2 font-semibold text-amber-200" colSpan={3}>
-                {_fmtPctShort(mdfPctNumeric)} du prix d&apos;achat
-                {prixFinal > 0 ? (
-                  <span className="ml-1 font-normal text-white/50">
-                    ({_fmtPctShort(mdfPctNumeric)} × {fmtMoney(prixFinal)})
+              <td className="px-3 py-2 font-semibold text-amber-200" colSpan={2}>
+                {estTrad ? (
+                  <>
+                    Prix d&apos;achat − prêt retenu
+                    {programmeLabel ? ` (${programmeLabel})` : ""}
+                  </>
+                ) : (
+                  <>
+                    {_fmtPctShort(mdfPctNumeric)} du prix d&apos;achat
+                    {prixFinal > 0 ? (
+                      <span className="ml-1 font-normal text-white/50">
+                        ({_fmtPctShort(mdfPctNumeric)} ×{" "}
+                        {fmtMoney(prixFinal)})
+                      </span>
+                    ) : null}
+                  </>
+                )}
+              </td>
+              {/* Balance de vente : financée par le vendeur → dans la
+                  colonne Finançable, en vert, à gauche du cash
+                  (retour Phil 2026-09-02). */}
+              <td className="px-3 py-2 text-right font-mono tabular-nums text-emerald-300">
+                {bvDeduiteMdf > 0 ? (
+                  <span title="Balance de vente — financée par le vendeur">
+                    − {fmtMoney(bvDeduiteMdf)}
                   </span>
-                ) : null}
+                ) : (
+                  <span className="text-white/40">—</span>
+                )}
               </td>
               <td className="px-3 py-2 text-right font-mono font-semibold tabular-nums text-amber-200">
-                {fmtMoney(mdfPctValue)}
+                {fmtMoney(Math.max(0, mdfPctValue - bvDeduiteMdf))}
               </td>
-              <td className="px-3 py-2 text-right font-mono tabular-nums text-white/40">
-                —
+              <td className="px-3 py-2 text-right font-mono tabular-nums text-emerald-300/70">
+                {bvDeduiteMdf > 0 ? fmtMoney(bvDeduiteMdf) : "—"}
               </td>
             </tr>
-            {bvDeduiteMdf > 0 ? (
-              /* Balance de vente : le vendeur FINANCE une partie de la
-                 mise de fonds (retour Phil 2026-09-02). */
-              <tr className="bg-emerald-500/5">
-                <td className="px-3 py-2 text-emerald-300" colSpan={3}>
-                  Balance de vente — financée par le vendeur
-                </td>
-                <td className="px-3 py-2 text-right font-mono tabular-nums text-emerald-300">
-                  − {fmtMoney(bvDeduiteMdf)}
-                </td>
-                <td className="px-3 py-2 text-right font-mono tabular-nums text-emerald-300/70">
-                  {fmtMoney(bvDeduiteMdf)}
-                </td>
-              </tr>
-            ) : null}
             <tr>
               <td
                 className="px-3 pt-2.5 pb-1 text-[9px] font-semibold uppercase tracking-wider text-white/40"
@@ -4905,7 +4957,9 @@ function FraisDemarrageBreakdownPanel({
             ) : null}
             <tr className="border-t-2 border-accent-500/50 bg-accent-500/10">
               <td className="px-3 py-2.5 font-bold text-white" colSpan={3}>
-                Total — MDF avec prêteur B
+                {estTrad
+                  ? "Total — mise de fonds (cash à l'achat)"
+                  : "Total — MDF avec prêteur B"}
                 {mdfTotalStored != null &&
                 Math.abs((mdfTotalStored || 0) - totalMdfLocal) > 1 ? (
                   <span className="ml-2 rounded bg-amber-500/30 px-1.5 py-0 text-[9px] font-normal text-amber-100">
@@ -5413,6 +5467,7 @@ const DEPENSES_LABELS: Array<[keyof DepensesBreakdown, string]> = [
   ["wifi", "WiFi"],
   ["thermopompes", "Thermopompes (APH)"],
   ["autres_normalisations", "Autres normalisations (% × revenus)"],
+  ["interets_balance_vente", "Intérêts balance de vente"],
   ["autres", "Autres dépenses"]
 ];
 
@@ -5667,6 +5722,35 @@ function StrategieDetailSubsection({
   const cl = (lead.tri_croissance_loyers ?? 0.03) * 100;
   const cd = (lead.tri_croissance_depenses ?? 0.03) * 100;
   const bv = data.balance_vente?.montant ?? 0;
+  // Nombre d'années jusqu'au refi : durée du projet en prêteur B,
+  // horizon de détention en traditionnel.
+  const nAnneesRefi = trad
+    ? trad.horizon
+    : lead.duree_projet_annees ?? 2;
+  const facteurRefi = Math.pow(1 + cl / 100, nAnneesRefi);
+  // Dépenses poste par poste, par scénario (les deux modes).
+  const depensesParScenario: Array<
+    [string, Partial<Record<keyof DepensesBreakdown, number>> | undefined]
+  > = trad
+    ? [
+        [
+          `Achat (${trad.labels[trad.programme_retenu]})`,
+          trad.achat[trad.programme_retenu]?.depenses
+        ],
+        ...Object.entries(trad.refi).map(
+          ([k, s2]) =>
+            [`Refi ${trad.labels[k] || k}`, s2?.depenses] as [
+              string,
+              Partial<Record<keyof DepensesBreakdown, number>> | undefined
+            ]
+        )
+      ]
+    : [
+        ["Achat", data.scenarios.achat?.depenses],
+        ["Refi SCHL", data.scenarios.refi_schl?.depenses],
+        ["Refi APH 50", data.scenarios.refi_aph_50?.depenses],
+        ["Refi APH 100", data.scenarios.refi_aph_100?.depenses]
+      ];
   return (
     <div className="mt-4">
       <h4 className="text-[10px] font-semibold uppercase tracking-wider text-accent-500">
@@ -5721,26 +5805,109 @@ function StrategieDetailSubsection({
         <>
           <p className="mt-3 text-[10px] font-semibold uppercase tracking-wider text-white/40">
             Unités ({unites.length}) — cochée = loyer cible au refi,
-            décochée = loyer actuel × croissance
+            décochée = loyer actuel × (1 + {cl.toFixed(1)} %)^
+            {nAnneesRefi} (croissance organique jusqu&apos;au refi)
           </p>
           <table className="mt-1 w-full text-[11px]">
             <tbody>
-              {unites.map((u, i) => (
-                <tr key={i} className="border-t border-brand-800/60">
-                  <td className="px-2 py-1 text-white/60">
-                    {String(u.typo || "—")} · #{i + 1}
-                    {u.optimiser === false ? " (non optimisée)" : ""}
-                  </td>
-                  <td className="px-2 py-1 text-right font-mono tabular-nums text-white/80">
-                    {_fmtMoneyDetail(Number(u.loyer_actuel) || 0)} →{" "}
-                    {u.optimiser === false
-                      ? `${_fmtMoneyDetail((Number(u.loyer_actuel) || 0))} × croissance`
-                      : _fmtMoneyDetail(Number(u.loyer_cible) || 0)}
-                  </td>
-                </tr>
-              ))}
+              {unites.map((u, i) => {
+                const actuel = Number(u.loyer_actuel) || 0;
+                const cible = Number(u.loyer_cible) || 0;
+                const nonOpt = u.optimiser === false;
+                const resultat = nonOpt
+                  ? actuel * facteurRefi
+                  : cible || actuel;
+                return (
+                  <tr key={i} className="border-t border-brand-800/60">
+                    <td className="px-2 py-1 text-white/60">
+                      {String(u.typo || "—")} · #{i + 1}
+                      {nonOpt ? " (non optimisée)" : " (optimisée)"}
+                    </td>
+                    <td className="px-2 py-1 text-right font-mono tabular-nums text-white/80">
+                      {nonOpt
+                        ? `${_fmtMoneyDetail(actuel)} × ${facteurRefi.toFixed(4)} = `
+                        : `${_fmtMoneyDetail(actuel)} → cible `}
+                      <b className="text-white">
+                        {_fmtMoneyDetail(resultat)}
+                      </b>
+                      {" /mois au refi"}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
+          <p className="mt-1 px-2 text-[10px] text-white/40">
+            Somme au refi :{" "}
+            {_fmtMoneyDetail(
+              unites.reduce((s2, u) => {
+                const actuel = Number(u.loyer_actuel) || 0;
+                const cible = Number(u.loyer_cible) || 0;
+                return (
+                  s2 +
+                  (u.optimiser === false
+                    ? actuel * facteurRefi
+                    : cible || actuel)
+                );
+              }, 0)
+            )}{" "}
+            /mois × 12 (avant unités ajoutées).
+          </p>
+        </>
+      ) : null}
+
+      {/* Dépenses poste par poste, par scénario — « tous les
+          détails » (Phil 2026-09-02). */}
+      {depensesParScenario.length > 0 ? (
+        <>
+          <p className="mt-3 text-[10px] font-semibold uppercase tracking-wider text-white/40">
+            Dépenses détaillées par scénario ($/an)
+          </p>
+          <div className="mt-1 overflow-x-auto">
+            <table className="w-full text-[10px]">
+              <thead>
+                <tr className="text-[9px] uppercase tracking-wider text-white/40">
+                  <td className="px-2 py-1">Poste</td>
+                  {depensesParScenario.map(([lbl]) => (
+                    <td key={lbl} className="px-2 py-1 text-right">
+                      {lbl}
+                    </td>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {DEPENSES_LABELS.map(([key, lbl]) => (
+                  <tr key={key} className="border-t border-brand-800/60">
+                    <td className="px-2 py-1 text-white/60">{lbl}</td>
+                    {depensesParScenario.map(([slbl, deps]) => (
+                      <td
+                        key={slbl}
+                        className="px-2 py-1 text-right font-mono tabular-nums text-white/80"
+                      >
+                        {_fmtMoneyDetail(Number(deps?.[key] ?? 0))}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+                <tr className="border-t-2 border-brand-700 font-bold">
+                  <td className="px-2 py-1 text-white">Total</td>
+                  {depensesParScenario.map(([slbl, deps]) => (
+                    <td
+                      key={slbl}
+                      className="px-2 py-1 text-right font-mono tabular-nums text-white"
+                    >
+                      {_fmtMoneyDetail(
+                        DEPENSES_LABELS.reduce(
+                          (s2, [k]) => s2 + Number(deps?.[k] ?? 0),
+                          0
+                        )
+                      )}
+                    </td>
+                  ))}
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </>
       ) : null}
 

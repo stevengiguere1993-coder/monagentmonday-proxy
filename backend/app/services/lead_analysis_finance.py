@@ -972,7 +972,7 @@ class FinanceInputs:
     # la MDF et le solde au refi). Les anciennes valeurs de stratégie
     # (conventionnel/schl_std/aph_50/aph_100) sont des alias de
     # « traditionnel » + programme_achat.
-    programme_achat: str = "conventionnel"
+    programme_achat: Optional[str] = None
 
     # True quand la fiche a explicitement choisi une stratégie
     # (chantier staging) : active l'indexation organique des loyers
@@ -1703,13 +1703,15 @@ def compute_all(inputs: FinanceInputs, use_aph_select: bool = True) -> FinanceRe
     )
     if _est_trad:
         # Une ancienne stratégie « achat direct » (alias) PORTE le
-        # programme ; « traditionnel » lit programme_achat.
+        # programme ; « traditionnel » lit programme_achat ; None =
+        # AUTOMATIQUE : le programme au prêt le plus élevé (résolu
+        # après le calcul des colonnes — retour Phil 2026-09-02).
         if inputs.strategie in _alias_trad:
             programme = inputs.strategie
         elif inputs.programme_achat in _alias_trad:
             programme = inputs.programme_achat
         else:
-            programme = "conventionnel"
+            programme = None
         _cfg_par_prog = {
             "conventionnel": resolve_scenario("achat", sc_ov),
             "schl_std": cfg_schl,
@@ -1763,6 +1765,11 @@ def compute_all(inputs: FinanceInputs, use_aph_select: bool = True) -> FinanceRe
                 taux_interet=inputs.taux_interet_achat,
                 valeur_marchande=inputs.prix_achat,
             )
+        programme_auto = max(
+            achat_cols, key=lambda k: achat_cols[k].financement
+        )
+        if programme is None:
+            programme = programme_auto
 
         # ── Frais d\'acquisition (pas de phase chantier) : pas de 2e
         # courtier/évaluateur/notaire, ni portage, ni revenus pendant
@@ -1785,16 +1792,29 @@ def compute_all(inputs: FinanceInputs, use_aph_select: bool = True) -> FinanceRe
             float(c.get("montant", 0) or 0) for c in frais.frais_custom
         )
         frais_trad_total = round(sum(f_trad.values()) + _custom_total, 2)
+        # Finançabilité en traditionnel (retour Phil 2026-09-02 :
+        # « garde la colonne, tout non finançable par défaut ») : un
+        # poste coché est FINANCÉ par l'institution → 0 cash.
+        _fin_trad = set(inputs.frais_demarrage_financables or [])
+        frais_trad_cash = round(
+            sum(v for k, v in f_trad.items() if k not in _fin_trad)
+            + sum(
+                float(c.get("montant", 0) or 0)
+                for c in frais.frais_custom
+                if str(c.get("id", "")) not in _fin_trad
+            ),
+            2,
+        )
 
-        # MDF par colonne = prix + frais − prêt − balance de vente (la
-        # BV finance une partie de la mise de fonds).
+        # MDF par colonne = (prix − prêt − balance de vente) + frais
+        # payés CASH (la BV finance une partie de la mise de fonds).
         def _mdf_prog(prog: str) -> float:
             return max(
                 0.0,
                 inputs.prix_achat
                 - achat_cols[prog].financement
                 - bv_trad,
-            ) + frais_trad_total
+            ) + frais_trad_cash
 
         pret_retenu = achat_cols[programme].financement
         mdf_cash = _mdf_prog(programme)
@@ -1859,10 +1879,13 @@ def compute_all(inputs: FinanceInputs, use_aph_select: bool = True) -> FinanceRe
                 taux_interet=inputs.taux_interet_refi,
                 valeur_marchande=None,
             )
-            # Le refi rembourse le prêt d\'achat retenu ET la balance
-            # de vente : ce qui reste = le cash dégagé.
-            sc_r.equite_a_la_fin = (
-                sc_r.financement - solde_retenu_h - bv_trad
+            # « Total dépensé » (définition Phil 2026-09-02) : le prêt
+            # initial + tout le cash (MDF, frais, balance de vente) =
+            # prix + frais. Argent dégagé = nouveau prêt − total
+            # dépensé : à ce montant, il ne reste plus 1 $ à nous dans
+            # le projet.
+            sc_r.equite_a_la_fin = sc_r.financement - (
+                inputs.prix_achat + frais_trad_total
             )
             refi_cols[prog] = sc_r
 
@@ -1880,12 +1903,17 @@ def compute_all(inputs: FinanceInputs, use_aph_select: bool = True) -> FinanceRe
         # programme gagnant), puis poursuite de la détention.
         dep0_trad = dep_achat_trad.total - bv_interets_annuels
         pret_best_refi = refi_cols[best_prog].financement
+        # Dépenses de la colonne de RÉFÉRENCE à l'an H — la projection
+        # reprend EXACTEMENT ces chiffres à partir du refi (cohérence
+        # tableau haut/bas exigée par Phil 2026-09-02).
+        dep_ref_h = refi_cols[best_prog].depenses.total
         projection = []
         for a in range(0, max(h_annees, 12) + 1):
             rev_a = _rev_trad(a)
-            dep_a = dep0_trad * (1 + cd) ** a + (
-                bv_interets_annuels if a < h_annees else 0.0
-            )
+            if a < h_annees:
+                dep_a = dep0_trad * (1 + cd) ** a + bv_interets_annuels
+            else:
+                dep_a = dep_ref_h * (1 + cd) ** (a - h_annees)
             rno_a = rev_a - dep_a
             valeur_a = rno_a / inputs.tga if inputs.tga > 0 else 0.0
             if a <= h_annees:
@@ -1927,6 +1955,11 @@ def compute_all(inputs: FinanceInputs, use_aph_select: bool = True) -> FinanceRe
                 k: round(v, 2) for k, v in f_trad.items()
             },
             "frais_demarrage_total": frais_trad_total,
+            "frais_demarrage_cash": frais_trad_cash,
+            "total_depense": round(
+                inputs.prix_achat + frais_trad_total, 2
+            ),
+            "programme_retenu_auto": programme_auto,
             "mdf_cash": round(mdf_cash, 2),
             "pret_retenu": round(pret_retenu, 2),
             "solde_retenu_an_h": round(solde_retenu_h, 2),

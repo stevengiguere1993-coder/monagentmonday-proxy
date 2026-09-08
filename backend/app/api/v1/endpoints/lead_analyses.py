@@ -1973,7 +1973,7 @@ async def _compute_and_store(rec, db) -> dict:
         # dépenses réelles au refi — seulement quand une stratégie est
         # explicitement choisie (prod = NULL = calcul historique).
         strategie=rec.strategie_acquisition or "preteur_b",
-        programme_achat=rec.programme_achat or "conventionnel",
+        programme_achat=rec.programme_achat,
         refi_retenu=rec.refi_retenu,
         chantier_actif=rec.strategie_acquisition is not None,
         balance_vente_montant=float(rec.balance_vente_montant or 0),
@@ -1988,8 +1988,14 @@ async def _compute_and_store(rec, db) -> dict:
         # historique).
         unites=_parse_unites(rec.unites_json),
         frais_demarrage_overrides=frais_overrides,
-        frais_demarrage_financables=_parse_financables(
-            rec.frais_demarrage_financables_json
+        frais_demarrage_financables=(
+            []
+            if (
+                rec.strategie_acquisition
+                and rec.strategie_acquisition != "preteur_b"
+                and not rec.frais_demarrage_financables_json
+            )
+            else _parse_financables(rec.frais_demarrage_financables_json)
         ),
         frais_fixes_overrides=frais_fixes_overrides,
         pct_courtiers_overrides=pct_courtiers_overrides,
