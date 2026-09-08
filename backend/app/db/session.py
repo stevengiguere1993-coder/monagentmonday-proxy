@@ -2058,6 +2058,7 @@ async def init_db() -> None:
             ("lead_analyses", "refi_retenu", "VARCHAR(32)"),
             ("lead_analyses", "balance_vente_montant", "NUMERIC(14,2)"),
             ("lead_analyses", "balance_vente_taux_pct", "NUMERIC(5,3)"),
+            ("lead_analyses", "cashback_montant", "NUMERIC(14,2)"),
             ("lead_analyses", "projection_horizon_annees", "INTEGER"),
             # Phase 3 : optimisation par unité (liste JSON).
             ("lead_analyses", "unites_json", "TEXT"),
@@ -3831,6 +3832,19 @@ async def init_db() -> None:
                     0.05,
                     "mdf_frais",
                 ),
+                # ── Sept. 2026 : frais de dossier — institution
+                # traditionnelle. Montant FIXE en $ (retour Phil
+                # 2026-09-04 : « 5 000 $ de base au lieu d'un %  »).
+                (
+                    "frais_dossier_trad",
+                    5000.0,
+                    "Frais de dossier — institution traditionnelle ($)",
+                    "Montant fixe facturé par l'institution (conventionnel / SCHL / APH) à l'achat. Défaut 5 000 $.",
+                    0.0,
+                    100000.0,
+                    100.0,
+                    "mdf_frais",
+                ),
                 # ── Groupe : Dépenses normalisées SCHL (juin 2026) ───
                 # Barème ``lead_analysis_finance.BAREME`` externalisé.
                 # Valeurs = EXACTEMENT les constantes hardcoded. Les % de
@@ -4344,6 +4358,11 @@ async def init_db() -> None:
              "visible": True},
             {"key": "revenus_nets_pendant_projet",
              "label_fr": "Revenus nets pendant projet", "visible": True},
+            {"key": "interets_balance_vente",
+             "label_fr": "Intérêts balance de vente", "visible": True},
+            {"key": "detention",
+             "label_fr": "Détention (institution traditionnelle)",
+             "visible": True},
         ])
         try:
             await conn.execute(

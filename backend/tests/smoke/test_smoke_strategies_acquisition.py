@@ -238,26 +238,172 @@ def test_traditionnel_alias_et_aph():
 
 
 def test_traditionnel_balance_vente_et_depenses():
-    """En traditionnel : la BV réduit la MDF et ses intérêts annuels
-    apparaissent comme DÉPENSE permanente des colonnes d'achat."""
+    """En traditionnel (retour Phil 2026-09-04) : la BV réduit la MDF et
+    ses intérêts sont PROVISIONNÉS pour H ans dans la composition
+    (ligne propre, comme en prêteur B) — plus une dépense annuelle."""
     r = compute_all(
         _inputs(
             strategie="traditionnel",
             balance_vente_montant=100_000.0,
             balance_vente_taux_pct=0.06,
+            projection_horizon_annees=5,
         ),
         use_aph_select=False,
     )
     t = r.to_dict()["traditionnel"]
     assert t["interets_bv_annuels"] == 6_000.0
     dep = t["achat"]["conventionnel"]["depenses"]
-    assert dep["interets_balance_vente"] == 6_000.0
-    # La MDF du retenu déduit la BV.
+    assert dep["interets_balance_vente"] == 0.0
+    # Ligne propre : 100 k × 6 % × 5 ans.
+    assert abs(t["frais_demarrage"]["interets_balance_vente"] - 30_000) < 0.01
+    # La MDF du retenu déduit la BV ; frais tous cash (rien de coché).
     attendu = max(
         0.0,
         1_000_000 - t["pret_retenu"] - 100_000,
-    ) + t["frais_demarrage_total"]
+    ) + t["frais_demarrage_cash"]
     assert abs(t["mdf_cash"] - attendu) < 0.01
+    assert t["frais_demarrage_cash"] == t["frais_demarrage_total"]
+
+
+def test_traditionnel_composition_des_frais():
+    """Composition trad (retour Phil 2026-09-04) : pas de 2e courtier /
+    évaluateur / notaire ni portage ni revenus pendant projet ; courtier
+    1 = 1 % du PRÊT du programme ; frais de dossier = 5 000 $ fixe ;
+    poste « Détention » à 0 par défaut, surchargeable."""
+    r = compute_all(
+        _inputs(strategie="traditionnel", programme_achat="conventionnel"),
+        use_aph_select=False,
+    )
+    t = r.to_dict()["traditionnel"]
+    f = t["frais_demarrage"]
+    for k in (
+        "courtier_hypothecaire_2", "evaluateur_2", "notaire_2",
+        "interets", "revenus_nets_pendant_projet",
+    ):
+        assert f[k] == 0.0, k
+    assert abs(f["courtier_hypothecaire_1"] - 0.01 * t["pret_retenu"]) < 0.01
+    assert f["frais_dossier_preteur"] == 5_000.0
+    assert f["detention"] == 0.0
+    assert t["frais_dossier_trad"] == 5_000.0
+
+    # Override de fiche : détention 25 000 $, frais de dossier 8 000 $.
+    r2 = compute_all(
+        _inputs(
+            strategie="traditionnel",
+            programme_achat="conventionnel",
+            frais_demarrage_overrides={
+                "detention": 25_000.0, "frais_dossier_preteur": 8_000.0
+            },
+        ),
+        use_aph_select=False,
+    )
+    t2 = r2.to_dict()["traditionnel"]
+    assert t2["frais_demarrage"]["detention"] == 25_000.0
+    assert t2["frais_demarrage"]["frais_dossier_preteur"] == 8_000.0
+    assert abs(
+        t2["frais_demarrage_total"] - t["frais_demarrage_total"]
+        - 25_000 - 3_000
+    ) < 0.01
+
+    # Défaut global (Paramètres) : frais de dossier trad 12 000 $.
+    r3 = compute_all(
+        _inputs(
+            strategie="traditionnel",
+            programme_achat="conventionnel",
+            frais_fixes_overrides={"frais_dossier_trad": 12_000.0},
+        ),
+        use_aph_select=False,
+    )
+    assert r3.to_dict()["traditionnel"]["frais_demarrage"][
+        "frais_dossier_preteur"
+    ] == 12_000.0
+
+
+def test_courtier_1_sur_le_pret_en_chantier():
+    """Retour Phil 2026-09-04 : le courtier hypothécaire 1 se calcule
+    sur le PRÊT, pas sur le prix. Prod (chantier inactif) = prix,
+    intact au centime."""
+    prod = compute_all(_inputs(), use_aph_select=False)
+    assert prod.frais_demarrage.courtier_hypothecaire_1 == 0.01 * 1_000_000
+    chantier = compute_all(
+        _inputs(chantier_actif=True, mdf_preteur_b_pct=0.25),
+        use_aph_select=False,
+    )
+    assert abs(
+        chantier.frais_demarrage.courtier_hypothecaire_1 - 0.01 * 750_000
+    ) < 0.01
+
+
+def test_cashback_preteur_b():
+    """Cashback 300 k$ sur 1 M$ : la banque voit 1,3 M$ → prêt B 975 k$
+    (75 %), assise de MDF 325 k$ − 300 k$ reçus au notaire = 25 k$ ;
+    total dépensé reste prix RÉEL + frais."""
+    sans = compute_all(_inputs(chantier_actif=True), use_aph_select=False)
+    avec = compute_all(
+        _inputs(chantier_actif=True, cashback_montant=300_000.0),
+        use_aph_select=False,
+    )
+    d = avec.to_dict()
+    assert d["cashback"] == {"montant": 300_000.0, "prix_bancaire": 1_300_000.0}
+    assert avec.pret_preteur_b_sur_prix == 975_000.0
+    assert d["mdf_pct_prix_achat"] == 325_000.0
+    # MDF = 25 k$ d'assise + frais cash (frais recalculés sur 1,3 M$).
+    assert abs(
+        avec.mdf_preteur_b - (25_000 + avec.frais_demarrage.total
+                              - _frais_finances(avec))
+    ) < 1.0
+    # − 300 k$ reçus, + frais recalculés sur 1,3 M$ (taxes de bienvenue,
+    # courtier, dossier, portage sur un prêt plus gros).
+    assert avec.mdf_preteur_b < sans.mdf_preteur_b - 100_000
+    assert avec.frais_demarrage.total > sans.frais_demarrage.total
+    # Total dépensé (prix d'acquisition) = prix réel + frais.
+    assert abs(
+        avec.prix_acquisition - (1_000_000 + avec.frais_demarrage.total)
+    ) < 0.01
+    # Taxes de bienvenue et courtier sur le prix / prêt déclarés.
+    assert avec.frais_demarrage.taxes_bienvenue > sans.frais_demarrage.taxes_bienvenue
+    assert abs(avec.frais_demarrage.courtier_hypothecaire_1 - 9_750) < 0.01
+
+
+def _frais_finances(r) -> float:
+    """Portion des frais finançables prise par le prêteur B (défaut :
+    rapport efficacité / développement / travaux, à 75 %)."""
+    return r.pret_preteur_b_frais_finances
+
+
+def test_cashback_traditionnel():
+    """Cashback en institution traditionnelle : la valeur marchande
+    plafond passe à 1,3 M$ (prêt plus gros), la MDF déduit le cashback,
+    total dépensé = prix réel + frais."""
+    sans = compute_all(
+        _inputs(strategie="traditionnel", programme_achat="conventionnel"),
+        use_aph_select=False,
+    )
+    avec = compute_all(
+        _inputs(
+            strategie="traditionnel",
+            programme_achat="conventionnel",
+            cashback_montant=300_000.0,
+        ),
+        use_aph_select=False,
+    )
+    ts, ta = sans.to_dict()["traditionnel"], avec.to_dict()["traditionnel"]
+    assert ta["cashback"] == 300_000.0
+    assert ta["prix_bancaire"] == 1_300_000.0
+    assert ta["pret_retenu"] >= ts["pret_retenu"]
+    attendu = max(
+        0.0, 1_300_000 - ta["pret_retenu"] - 300_000
+    ) + ta["frais_demarrage_cash"]
+    assert abs(ta["mdf_cash"] - attendu) < 0.01
+    assert abs(
+        ta["total_depense"] - (1_000_000 + ta["frais_demarrage_total"])
+    ) < 0.01
+    # Chaque colonne d'achat porte sa propre MDF (courtier sur SON prêt).
+    for prog, sc in ta["achat"].items():
+        att = max(
+            0.0, 1_300_000 - sc["financement"] - 300_000
+        )
+        assert ta["mdf_par_programme"][prog] >= att - 0.01
 
 
 def test_refi_reference_manuelle():

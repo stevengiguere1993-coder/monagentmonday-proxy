@@ -331,6 +331,12 @@ class LeadAnalysis(Base, TimestampUpdateMixin):
     balance_vente_taux_pct: Mapped[Optional[float]] = mapped_column(
         Numeric(5, 3), nullable=True
     )
+    # Cashback reçu au notaire (2026-09-04) : le prix déclaré à
+    # l'institution = prix + cashback → plus gros prêt, moins de
+    # cash. NULL/0 = aucun.
+    cashback_montant: Mapped[Optional[float]] = mapped_column(
+        Numeric(14, 2), nullable=True
+    )
     # Horizon de projection (années) des stratégies de détention —
     # NULL → défaut 5 ans.
     projection_horizon_annees: Mapped[Optional[int]] = mapped_column(

@@ -157,6 +157,7 @@ class LeadAnalysisRead(BaseModel):
     programme_achat: Optional[str] = None
     refi_retenu: Optional[str] = None
     balance_vente_montant: Optional[float] = None
+    cashback_montant: Optional[float] = None
     balance_vente_taux_pct: Optional[float] = None
     projection_horizon_annees: Optional[int] = None
     # Croissances annuelles (FRACTIONS, 0.03 = 3 %) — partagées avec
@@ -289,6 +290,8 @@ class LeadAnalysisUpdate(BaseModel):
         ),
     )
     balance_vente_montant: Optional[float] = Field(default=None, ge=0)
+    # Cashback reçu au notaire (prix déclaré = prix + cashback).
+    cashback_montant: Optional[float] = Field(default=None, ge=0)
     balance_vente_taux_pct: Optional[float] = Field(
         default=None, ge=0, le=30
     )
@@ -842,6 +845,10 @@ async def _load_frais_mdf_overrides(db) -> tuple[dict, dict, Optional[float]]:
             elif row.key == "frais_dossier_preteur_pct":
                 # Idem : BD en pct (2.0 = 2 %), moteur en fraction.
                 frais_dossier_preteur_pct = v / 100.0
+            elif row.key == "frais_dossier_trad":
+                # Institution traditionnelle : montant $ FIXE (défaut
+                # 5 000 $) — lu par le moteur dans ce même dict.
+                frais_fixes["frais_dossier_trad"] = v
     except Exception as exc:  # noqa: BLE001
         log.warning(
             "Failed to load frais MDF overrides from DB: %s", exc
@@ -921,6 +928,15 @@ async def _load_frais_custom_defs(db) -> list[dict]:
 # visibilité). Cf. ``prospection_analysis_defaults`` (groupe ``mdf_frais``).
 _FRAIS_REGISTRY_KEY = "mdf_frais_registry"
 
+# Postes FIXES ajoutés APRÈS la création du registre : toujours
+# appendus (visibles) s'ils manquent — sinon la fiche et le PDF les
+# masquaient par oubli (retour Phil 2026-09-04 : « je ne vois toujours
+# pas la ligne des intérêts de la balance de vente »).
+_POSTES_PERMANENTS: tuple[tuple[str, str], ...] = (
+    ("interets_balance_vente", "Intérêts balance de vente"),
+    ("detention", "Détention (institution traditionnelle)"),
+)
+
 
 def _sanitize_registry(value_json) -> list[dict]:
     """Normalise la liste ORDONNÉE du registre ``mdf_frais_registry`` en
@@ -997,6 +1013,12 @@ async def _load_frais_registry(db) -> tuple[list[str], list[dict]]:
                     }
                 )
                 known.add(cid)
+        for _pk, _plbl in _POSTES_PERMANENTS:
+            if _pk not in known:
+                registry.append(
+                    {"key": _pk, "label_fr": _plbl, "visible": True}
+                )
+                known.add(_pk)
         masques = [e["key"] for e in registry if not e["visible"]]
         return masques, registry
     except Exception as exc:  # noqa: BLE001
@@ -1310,10 +1332,19 @@ async def update_analysis(
         "taxes_municipales", "taxes_scolaires", "assurances",
         "energie",
     }
+    _ancienne_strategie = rec.strategie_acquisition
     for k, v in payload.model_dump(exclude_unset=True).items():
         setattr(rec, k, v)
         if k in validated_fields:
             touched_validated_field = True
+    # Changement de stratégie (retour Phil 2026-09-04) : les coches
+    # « finançable » ne se transportent pas d'un mode à l'autre — rien
+    # de coché en institution traditionnelle, défauts en prêteur B.
+    if (
+        "strategie_acquisition" in payload.model_fields_set
+        and rec.strategie_acquisition != _ancienne_strategie
+    ):
+        rec.frais_demarrage_financables_json = None
     rec.updated_at = datetime.now(timezone.utc)
 
     # Phase A3 — si l'utilisateur a édité un champ borné, on
@@ -1829,7 +1860,7 @@ RECALC_INPUT_FIELDS = {
     "taux_interet_preteur_b_projet_pct",
     "frais_demarrage_overrides_json", "frais_demarrage_financables_json",
     "strategie_acquisition", "programme_achat", "refi_retenu",
-    "balance_vente_montant",
+    "balance_vente_montant", "cashback_montant",
     "balance_vente_taux_pct", "projection_horizon_annees",
     "tri_croissance_loyers", "tri_croissance_depenses", "unites_json",
 }
@@ -1979,6 +2010,7 @@ async def _compute_and_store(rec, db) -> dict:
         balance_vente_montant=float(rec.balance_vente_montant or 0),
         balance_vente_taux_pct=float(rec.balance_vente_taux_pct or 0)
         / 100.0,
+        cashback_montant=float(rec.cashback_montant or 0),
         # Phase 2 — détention + refi an N (achats directs). Les
         # croissances réutilisent celles du TRI (source unique).
         projection_horizon_annees=int(rec.projection_horizon_annees or 5),
@@ -3303,6 +3335,9 @@ class TriInputs(BaseModel):
     rpv_refi: float = 0.0
     cr_loyers: float = 0.0
     cr_dep: float = 0.0
+    # Année du refinancement (retour Phil 2026-09-04) : horizons =
+    # n, n+5, n+10. Repris de l'analyse, modifiable.
+    annee_refi: int = 2
 
 
 class TriInputsResponse(BaseModel):
@@ -3343,9 +3378,39 @@ def _best_refi_scenario(results: dict) -> Optional[dict]:
 def _derive_tri_auto_inputs(results: dict) -> dict:
     """Dérive les 8 intrants AUTO depuis ``analysis_results_json``.
 
-    Cf. mapping documenté en tête de section. Retourne un dict des 8
-    clés auto (les 4 manuelles sont gérées à part)."""
+    Cf. mapping documenté en tête de section. Depuis 2026-09-04 les
+    deux stratégies sont couvertes : en institution traditionnelle,
+    la dette initiale = prêt retenu + balance de vente, la MDF = cash à
+    l'achat et le refi de référence est celui de l'onglet
+    Refinancement. En prêteur B, le ratio prêt-valeur se lit sur le
+    prêt réellement accordé (cashback → plus gros prêt sur le prix
+    réel) + balance de vente. Retourne un dict des 8 clés auto."""
     prix = float(results.get("prix_achat") or 0)
+
+    trad = results.get("traditionnel")
+    if isinstance(trad, dict) and isinstance(trad.get("refi"), dict):
+        best_key = (trad.get("best_refi") or {}).get("key")
+        best = (trad.get("refi") or {}).get(best_key) or {}
+        dette = float(trad.get("pret_retenu") or 0) + float(
+            trad.get("balance_vente") or 0
+        )
+        total = float(trad.get("frais_demarrage_total") or 0)
+        cash = trad.get("frais_demarrage_cash")
+        pret_constr = (
+            max(0.0, total - float(cash)) if cash is not None else 0.0
+        )
+        return {
+            "prix": prix,
+            "rpv_achat": (dette / prix) if prix > 0 else 0.0,
+            # Frais roulés dans le prêt de l'institution (postes cochés).
+            "pret_constr": pret_constr,
+            "mdf": float(trad.get("mdf_cash") or 0),
+            "loyers2": float(best.get("revenus_totaux") or 0),
+            "dep2": float(best.get("depenses_total") or 0),
+            "valeur2": float(best.get("valeur_retenue") or 0),
+            "rpv_refi": float(best.get("ltv") or 0),
+        }
+
     mdf_pct = float(results.get("mdf_preteur_b_pct") or 0)
     mdf = float(results.get("mdf_preteur_b") or 0)
 
@@ -3370,6 +3435,15 @@ def _derive_tri_auto_inputs(results: dict) -> dict:
             except (TypeError, ValueError):
                 continue
 
+    # Dette initiale = prêt B sur le prix DÉCLARÉ + balance de vente ;
+    # sans cashback ni BV = (1 − mdf_pct) × prix, comme avant.
+    pret_b = (results.get("pret_preteur_b") or {}).get("sur_prix")
+    bv = float((results.get("balance_vente") or {}).get("montant") or 0)
+    if pret_b is not None and prix > 0:
+        rpv_achat = (float(pret_b) + bv) / prix
+    else:
+        rpv_achat = max(0.0, 1.0 - mdf_pct)
+
     # Scénario refi GAGNANT (best refi) — matché par
     # ``best_refi.program == scenario.label``. Les revenus, dépenses,
     # valeur et LTV des intrants TRI proviennent TOUS de ce même
@@ -3380,8 +3454,7 @@ def _derive_tri_auto_inputs(results: dict) -> dict:
     best = _best_refi_scenario(results) or {}
     return {
         "prix": prix,
-        # rpv_achat ≈ 1 − % mise de fonds de base du prêteur B.
-        "rpv_achat": max(0.0, 1.0 - mdf_pct),
+        "rpv_achat": rpv_achat,
         "pret_constr": pret_constr,
         "mdf": mdf,
         # loyers2 / dep2 = revenus & dépenses d'opération DU best refi
@@ -3391,6 +3464,18 @@ def _derive_tri_auto_inputs(results: dict) -> dict:
         "valeur2": float(best.get("valeur_retenue") or 0),
         "rpv_refi": float(best.get("ltv") or 0),
     }
+
+
+def _annee_refi_de(rec) -> int:
+    """Année du refinancement de la fiche (retour Phil 2026-09-04) :
+    durée du projet en prêteur B, horizon de détention en institution
+    traditionnelle ; 2 (Excel) tant que la fiche n'a pas de stratégie."""
+    strat = getattr(rec, "strategie_acquisition", None)
+    if not strat:
+        return 2
+    if strat == "preteur_b":
+        return max(1, int(getattr(rec, "duree_projet_annees", None) or 2))
+    return max(1, int(getattr(rec, "projection_horizon_annees", None) or 5))
 
 
 async def _load_tri_defaults(db) -> dict:
@@ -3509,13 +3594,14 @@ async def get_tri_inputs(
         pct=manual["pct"],
         cr_loyers=manual["cr_loyers"],
         cr_dep=manual["cr_dep"],
+        annee_refi=_annee_refi_de(rec),
     )
     return TriInputsResponse(
         inputs=inputs,
         analysis_ready=analysis_ready,
         auto_fields=[
             "prix", "rpv_achat", "pret_constr", "mdf",
-            "loyers2", "dep2", "valeur2", "rpv_refi",
+            "loyers2", "dep2", "valeur2", "rpv_refi", "annee_refi",
         ],
         manual_fields=["capital", "pct", "cr_loyers", "cr_dep"],
     )
@@ -3554,6 +3640,7 @@ async def compute_tri_endpoint(
         rpv_refi=payload.rpv_refi,
         cr_loyers=payload.cr_loyers,
         cr_dep=payload.cr_dep,
+        annee_refi=payload.annee_refi,
     )
 
     # Persiste les 4 intrants MANUELS sur la fiche (les 8 auto sont

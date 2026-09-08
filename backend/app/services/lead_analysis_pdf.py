@@ -638,6 +638,62 @@ _SCENARIO_SHORT = {
 }
 
 
+_TRAD_POSTE_LABELS = [
+    ("courtier_hypothecaire_1", "Courtier hypothécaire (1 % × prêt)"),
+    ("taxes_bienvenue", "Taxes de bienvenue (prix déclaré)"),
+    ("evaluateur", "Évaluateur"),
+    ("inspection", "Inspection"),
+    ("avocat", "Avocat"),
+    ("notaire", "Notaire"),
+    ("rapport_efficacite", "Rapport efficacité énergétique"),
+    ("frais_developpement", "Frais de développement"),
+    ("frais_negociations", "Frais de négociations"),
+    ("frais_travaux", "Frais de travaux"),
+    ("frais_dossier_preteur", "Frais de dossier (montant fixe)"),
+    ("interets_balance_vente", "Intérêts balance de vente (H ans)"),
+    ("detention", "Détention"),
+]
+_TRAD_POSTES_PERMANENTS = {"interets_balance_vente", "detention"}
+
+
+def _trad_composition_table(rl, trad: dict, *, s):
+    """Composition de la mise de fonds — institution traditionnelle :
+    même logique que le tableau de la fiche (prix déclaré − prêt
+    retenu − cashback − balance de vente + frais payés cash)."""
+    labels = trad.get("labels") or {}
+    retenu = trad.get("programme_retenu") or ""
+    prix_b = float(trad.get("prix_bancaire") or 0)
+    cb = float(trad.get("cashback") or 0)
+    bv = float(trad.get("balance_vente") or 0)
+    pret = float(trad.get("pret_retenu") or 0)
+    rows = [(
+        ("Prix déclaré" if cb > 0 else "Prix d'achat")
+        + f" − prêt retenu ({labels.get(retenu, retenu)})",
+        _money(max(0.0, prix_b - pret)),
+    )]
+    if cb > 0:
+        rows.append(("− Cashback reçu au notaire", _money(-cb)))
+    if bv > 0:
+        rows.append(("− Balance de vente (financée par le vendeur)",
+                     _money(-bv)))
+    fd = trad.get("frais_demarrage") or {}
+    for key, lbl in _TRAD_POSTE_LABELS:
+        v = float(fd.get(key) or 0)
+        if abs(v) < 0.005 and key not in _TRAD_POSTES_PERMANENTS:
+            continue
+        rows.append((lbl, _money(v)))
+    rows.append(("Frais d'acquisition (total)",
+                 _money(trad.get("frais_demarrage_total"))))
+    cash = trad.get("frais_demarrage_cash")
+    if cash is not None and abs(float(cash) - float(
+            trad.get("frais_demarrage_total") or 0)) > 0.5:
+        rows.append(("dont payés cash (le reste roulé dans le prêt)",
+                     _money(cash)))
+    rows.append(("Total — mise de fonds (cash à l'achat)",
+                 _money(trad.get("mdf_cash"))))
+    return _table_two_col(rl, rows, s=s)
+
+
 def _traditionnel_section(rl, trad: dict, *, s):
     """Stratégie « institution traditionnelle » — reflet des onglets de
     la fiche : sommaire d'achat (programme retenu), tableau Achat (4
@@ -667,12 +723,20 @@ def _traditionnel_section(rl, trad: dict, *, s):
         ("Prêt accordé à l'achat", _money(trad.get("pret_retenu"))),
         ("MDF (cash à l'achat)", _money(trad.get("mdf_cash"))),
         ("Frais d'acquisition", _money(trad.get("frais_demarrage_total"))),
+        ("Total dépensé (prêt initial + cash)",
+         _money(trad.get("total_depense"))),
         (
             "Croissance (loyers / dépenses)",
             f"{float(trad.get('croissance_loyers') or 0) * 100:.1f} % / "
             f"{float(trad.get('croissance_depenses') or 0) * 100:.1f} % par an",
         ),
     ]
+    if float(trad.get("cashback") or 0) > 0:
+        rows.append((
+            "Cashback reçu au notaire",
+            f"{_money(trad.get('cashback'))} · prix déclaré à "
+            f"l'institution {_money(trad.get('prix_bancaire'))}",
+        ))
     if float(trad.get("balance_vente") or 0) > 0:
         rows.append((
             "Balance de vente (déduite de la MDF)",
@@ -1047,11 +1111,45 @@ def _compute_rci_pvi(
 #   rpv_refi    = best_refi.ltv
 
 def _derive_tri_auto_inputs(results: dict) -> dict:
-    """Dérive les 8 intrants AUTO depuis `analysis_results_json`."""
+    """Dérive les 8 intrants AUTO depuis `analysis_results_json`
+    (miroir de l'endpoint /tri-inputs). Depuis 2026-09-04 les
+    deux stratégies sont couvertes : en institution traditionnelle,
+    la dette initiale = prêt retenu + balance de vente, la MDF = cash à
+    l'achat et le refi de référence est celui de l'onglet
+    Refinancement. En prêteur B, le ratio prêt-valeur se lit sur le
+    prêt réellement accordé (cashback → plus gros prêt sur le prix
+    réel) + balance de vente. Retourne un dict des 8 clés auto."""
     prix = float(results.get("prix_achat") or 0)
+
+    trad = results.get("traditionnel")
+    if isinstance(trad, dict) and isinstance(trad.get("refi"), dict):
+        best_key = (trad.get("best_refi") or {}).get("key")
+        best = (trad.get("refi") or {}).get(best_key) or {}
+        dette = float(trad.get("pret_retenu") or 0) + float(
+            trad.get("balance_vente") or 0
+        )
+        total = float(trad.get("frais_demarrage_total") or 0)
+        cash = trad.get("frais_demarrage_cash")
+        pret_constr = (
+            max(0.0, total - float(cash)) if cash is not None else 0.0
+        )
+        return {
+            "prix": prix,
+            "rpv_achat": (dette / prix) if prix > 0 else 0.0,
+            # Frais roulés dans le prêt de l'institution (postes cochés).
+            "pret_constr": pret_constr,
+            "mdf": float(trad.get("mdf_cash") or 0),
+            "loyers2": float(best.get("revenus_totaux") or 0),
+            "dep2": float(best.get("depenses_total") or 0),
+            "valeur2": float(best.get("valeur_retenue") or 0),
+            "rpv_refi": float(best.get("ltv") or 0),
+        }
+
     mdf_pct = float(results.get("mdf_preteur_b_pct") or 0)
     mdf = float(results.get("mdf_preteur_b") or 0)
 
+    # pret_constr = portion des frais finançables prise en charge par le
+    # prêteur B = Σ frais[k] × (1 − mdf_pct) sur les postes finançables.
     frais = results.get("frais_demarrage") or {}
     financables = set(results.get("frais_demarrage_financables") or [])
     pret_constr = 0.0
@@ -1071,17 +1169,47 @@ def _derive_tri_auto_inputs(results: dict) -> dict:
             except (TypeError, ValueError):
                 continue
 
+    # Dette initiale = prêt B sur le prix DÉCLARÉ + balance de vente ;
+    # sans cashback ni BV = (1 − mdf_pct) × prix, comme avant.
+    pret_b = (results.get("pret_preteur_b") or {}).get("sur_prix")
+    bv = float((results.get("balance_vente") or {}).get("montant") or 0)
+    if pret_b is not None and prix > 0:
+        rpv_achat = (float(pret_b) + bv) / prix
+    else:
+        rpv_achat = max(0.0, 1.0 - mdf_pct)
+
+    # Scénario refi GAGNANT (best refi) — matché par
+    # ``best_refi.program == scenario.label``. Les revenus, dépenses,
+    # valeur et LTV des intrants TRI proviennent TOUS de ce même
+    # scénario : les scénarios APH (50/100) ont des revenus/dépenses
+    # différents (thermopompes, split abordable/PDM), donc on ne doit
+    # PAS prendre un scénario générique. Cohérent avec ``valeur2`` et
+    # ``rpv_refi`` (déjà issus du best refi).
     best = _best_refi_scenario(results) or {}
     return {
         "prix": prix,
-        "rpv_achat": max(0.0, 1.0 - mdf_pct),
+        "rpv_achat": rpv_achat,
         "pret_constr": pret_constr,
         "mdf": mdf,
+        # loyers2 / dep2 = revenus & dépenses d'opération DU best refi
+        # (mêmes que valeur2 / rpv_refi ci-dessous → cohérence garantie).
         "loyers2": float(best.get("revenus_totaux") or 0),
         "dep2": float(best.get("depenses_total") or 0),
         "valeur2": float(best.get("valeur_retenue") or 0),
         "rpv_refi": float(best.get("ltv") or 0),
     }
+
+
+def _annee_refi_de(rec) -> int:
+    """Année du refinancement de la fiche (retour Phil 2026-09-04) :
+    durée du projet en prêteur B, horizon de détention en institution
+    traditionnelle ; 2 (Excel) tant que la fiche n'a pas de stratégie."""
+    strat = getattr(rec, "strategie_acquisition", None)
+    if not strat:
+        return 2
+    if strat == "preteur_b":
+        return max(1, int(getattr(rec, "duree_projet_annees", None) or 2))
+    return max(1, int(getattr(rec, "projection_horizon_annees", None) or 5))
 
 
 def _persisted_manual_inputs(rec: LeadAnalysis) -> dict:
@@ -1163,6 +1291,7 @@ def _tri_section(rl, rec: LeadAnalysis, results: Optional[dict], *, s):
             rpv_refi=auto["rpv_refi"],
             cr_loyers=manual["cr_loyers"],
             cr_dep=manual["cr_dep"],
+            annee_refi=_annee_refi_de(rec),
         )
     except Exception as exc:  # noqa: BLE001
         log.warning("Section TRI PDF — calcul échoué : %s", exc)
@@ -1211,9 +1340,10 @@ def _tri_section(rl, rec: LeadAnalysis, results: Optional[dict], *, s):
         ]))
         return inner
 
-    c2 = _tri_cell("Sortie an 2", tri.get("an2"))
-    c7 = _tri_cell("Sortie an 7", tri.get("an7"))
-    c12 = _tri_cell("Sortie an 12", tri.get("an12"))
+    hz = [int(x) for x in (tri_data.get("horizons_list") or [2, 7, 12])]
+    c2, c7, c12 = [
+        _tri_cell(f"Sortie an {h}", tri.get(f"an{h}")) for h in hz
+    ]
     gap = 4 * mm
     col_w = (170 * mm - 2 * gap) / 3
     vedette = Table(
@@ -1241,7 +1371,7 @@ def _tri_section(rl, rec: LeadAnalysis, results: Optional[dict], *, s):
         Paragraph("Patrimoine", s["th"]),
     ]
     rows = [header]
-    for h in ("2", "7", "12"):
+    for h in [str(x) for x in hz]:
         hd = horizons.get(h) or {}
         cash_inv = hd.get("cash_investisseur")
         val_parts = hd.get("valeur_parts")
@@ -1280,17 +1410,17 @@ def _tri_section(rl, rec: LeadAnalysis, results: Optional[dict], *, s):
     out.append(th)
     out.append(Spacer(1, 4))
     out.append(Paragraph(
-        f"Total cash encaissé (hors vente) sur 12 ans : "
+        f"Total cash encaissé (hors vente) sur {hz[-1]} ans : "
         f"<b>{_money(sommaire.get('total_cash_sans_vente'))}</b>",
         s["small"]))
 
     # ── Ligne de temps des flux (scénario de sortie an 12) ───────────
-    flux12 = flux.get("12")
+    flux12 = flux.get(str(hz[-1]))
     if isinstance(flux12, list) and any(abs(float(x or 0)) > 0.5
                                         for x in flux12):
         out.append(Spacer(1, 8))
         out.append(Paragraph(
-            "Ligne de temps des flux — sortie an 12", s["subsection"]))
+            f"Ligne de temps des flux — sortie an {hz[-1]}", s["subsection"]))
         # On affiche uniquement les années avec un flux non nul + l'an 0.
         years = [i for i, v in enumerate(flux12)
                  if i == 0 or abs(float(v or 0)) > 0.5]
@@ -1563,11 +1693,28 @@ def _render_bytes(
     if t is not None:
         story.append(t)
 
-    # ── Composition MDF prêteur B ───────────────────────────────
-    story.append(Paragraph(
-        "COMPOSITION MDF PRÊTEUR B", s["section"]
-    ))
-    if results:
+    # ── Composition de la mise de fonds ─────────────────────────
+    # Institution traditionnelle : reflet du tableau de l'onglet
+    # Analyse (prix déclaré − prêt retenu − cashback − BV + frais).
+    _trad_comp = (
+        (results or {}).get("traditionnel")
+        if getattr(rec, "strategie_acquisition", None) in (
+            "traditionnel", "conventionnel", "schl_std",
+            "aph_50", "aph_100",
+        )
+        else None
+    )
+    if _trad_comp:
+        story.append(Paragraph(
+            "COMPOSITION DE LA MISE DE FONDS — INSTITUTION "
+            "TRADITIONNELLE", s["section"]
+        ))
+        story.append(_trad_composition_table(rl, _trad_comp, s=s))
+    else:
+        story.append(Paragraph(
+            "COMPOSITION MDF PRÊTEUR B", s["section"]
+        ))
+    if results and not _trad_comp:
         fd = results.get("frais_demarrage") or {}
         fd_total = float(results.get("frais_demarrage_total") or 0)
         mdf_pct_amt = float(results.get("mdf_pct_prix_achat") or 0)
@@ -1600,6 +1747,8 @@ def _render_bytes(
             ("interets", "Intérêts pendant projet (portage)"),
             ("revenus_nets_pendant_projet",
              "Revenus nets pendant projet"),
+            ("interets_balance_vente", "Intérêts balance de vente"),
+            ("detention", "Détention"),
         ]
         _fixed_label_by_key = {k: lbl for k, lbl in poste_defs}
 
@@ -1739,9 +1888,19 @@ def _render_bytes(
                 f"<b>{_money(total_cash_finances)}</b>"
                 if total_cash_finances > 0.5 else "—", s["num_b"]),
         ])
+        # Assise nette : % du prix DÉCLARÉ − cashback reçu au notaire −
+        # balance de vente (financée par le vendeur) — reflet de la
+        # ligne de base de la fiche.
+        _cb = float((results.get("cashback") or {}).get("montant") or 0)
+        _bv = float((results.get("balance_vente") or {}).get("montant") or 0)
+        _assise_lbl = "MDF (% × prix" + (" déclaré" if _cb > 0 else " d'achat") + ")"
+        if _cb > 0:
+            _assise_lbl += f" − cashback {_money(_cb)}"
+        if _bv > 0:
+            _assise_lbl += f" − balance de vente {_money(_bv)}"
         data_rows.append([
-            Paragraph("MDF (% × prix d'achat)", s["small"]),
-            Paragraph(_money(mdf_pct_amt), s["num"]),
+            Paragraph(_assise_lbl, s["small"]),
+            Paragraph(_money(max(0.0, mdf_pct_amt - _cb - _bv)), s["num"]),
             Paragraph("—", s["num"]),
         ])
         data_rows.append([
@@ -1786,7 +1945,7 @@ def _render_bytes(
             ])
         )
         story.append(t)
-    else:
+    elif not results:
         story.append(Paragraph(
             "L'analyse financière n'a pas encore été lancée — "
             "les frais de démarrage seront calculés au prochain "
