@@ -344,21 +344,6 @@ class LeadAnalysis(Base, TimestampUpdateMixin):
     optimisation_moment: Mapped[Optional[str]] = mapped_column(
         String(16), nullable=True
     )
-    # Mode RÉSIDENTIEL (2026-09-08) : ratio prêt-valeur (80.0 = 80 %),
-    # amortissement, lignes de dépenses réelles libres
-    # ``[{label, montant}]`` et dépenses ajoutées par l'optimisation.
-    ltv_residentiel_pct: Mapped[Optional[float]] = mapped_column(
-        Numeric(5, 2), nullable=True
-    )
-    amort_residentiel_annees: Mapped[Optional[int]] = mapped_column(
-        Integer, nullable=True
-    )
-    depenses_residentiel_json: Mapped[Optional[str]] = mapped_column(
-        Text, nullable=True
-    )
-    depenses_optimisation_supp: Mapped[Optional[float]] = mapped_column(
-        Numeric(14, 2), nullable=True
-    )
     # Horizon de projection (années) des stratégies de détention —
     # NULL → défaut 5 ans.
     projection_horizon_annees: Mapped[Optional[int]] = mapped_column(
