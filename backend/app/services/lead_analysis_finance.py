@@ -2003,6 +2003,12 @@ def compute_all(inputs: FinanceInputs, use_aph_select: bool = True) -> FinanceRe
             h_annees,
         )
 
+        # Dette à rembourser au refi et cash injecté à l'achat.
+        frais_finances_trad = round(frais_trad_total - frais_trad_cash, 2)
+        dette_an_h = solde_retenu_h + bv_trad + frais_finances_trad
+        cash_injecte_trad = mdf_cash
+        capital_rembourse_h = pret_retenu - solde_retenu_h
+
         refi_cols: dict = {}
         for prog, cfg_p in _cfg_par_prog.items():
             dep_refi_p = compute_depenses_for_scenario(
@@ -2035,12 +2041,15 @@ def compute_all(inputs: FinanceInputs, use_aph_select: bool = True) -> FinanceRe
                 taux_interet=inputs.taux_interet_refi,
                 valeur_marchande=None,
             )
-            # « Total dépensé » (définition Phil 2026-09-02) : le prêt
-            # initial + tout le cash (MDF, frais, balance de vente) =
-            # prix + frais. Argent dégagé = nouveau prêt − total
-            # dépensé : à ce montant, il ne reste plus 1 $ à nous dans
-            # le projet.
-            sc_r.equite_a_la_fin = sc_r.financement - total_depense_trad
+            # Argent NET dégagé (retour Phil 2026-09-08) : nouveau prêt −
+            # DETTE à l'an H (solde du prêt d'achat + balance de vente +
+            # frais roulés dans le prêt) − tout le CASH injecté à l'achat
+            # (MDF nette + frais). Le capital remboursé pendant la
+            # détention (prêt initial − solde) est déjà acquis — c'est
+            # ce qui sépare ce chiffre de « prêt − total dépensé ».
+            sc_r.equite_a_la_fin = (
+                sc_r.financement - dette_an_h - cash_injecte_trad
+            )
             refi_cols[prog] = sc_r
 
         meilleur_prog = max(
@@ -2115,7 +2124,15 @@ def compute_all(inputs: FinanceInputs, use_aph_select: bool = True) -> FinanceRe
                 "equite": round(valeur_a - solde_a, 2),
                 "pret_max": round(pret_max_a, 2),
                 "ecart_pret": round(pret_max_a - solde_a, 2),
-                "argent_degage": round(pret_max_a - total_depense_trad, 2),
+                # Avant/au refi : prêt max − dette − cash injecté ; après
+                # le refi : ce qu'un NOUVEAU refi dégagerait (prêt max −
+                # solde du prêt en place).
+                "argent_degage": round(
+                    pret_max_a - solde_a - frais_finances_trad - cash_injecte_trad
+                    if a <= h_annees
+                    else pret_max_a - solde_a,
+                    2,
+                ),
             })
 
         traditionnel = {
@@ -2142,6 +2159,10 @@ def compute_all(inputs: FinanceInputs, use_aph_select: bool = True) -> FinanceRe
             "mdf_cash": round(mdf_cash, 2),
             "pret_retenu": round(pret_retenu, 2),
             "solde_retenu_an_h": round(solde_retenu_h, 2),
+            "dette_an_h": round(dette_an_h, 2),
+            "cash_injecte": round(cash_injecte_trad, 2),
+            "capital_rembourse": round(capital_rembourse_h, 2),
+            "frais_finances": frais_finances_trad,
             "achat": {
                 p: _scenario_to_dict(s) for p, s in achat_cols.items()
             },
@@ -2163,8 +2184,9 @@ def compute_all(inputs: FinanceInputs, use_aph_select: bool = True) -> FinanceRe
                 "key": best_prog,
                 "label": _labels_prog[best_prog],
                 "argent_dispo": round(best_dispo, 2),
-                "refi_possible": best_dispo >= mdf_cash - 0.005,
-                "manque": round(max(0.0, mdf_cash - best_dispo), 2),
+                # Net ≥ 0 = tout le cash injecté ressort (et plus).
+                "refi_possible": best_dispo >= -0.005,
+                "manque": round(max(0.0, -best_dispo), 2),
             },
         }
 
@@ -2213,7 +2235,10 @@ def compute_all(inputs: FinanceInputs, use_aph_select: bool = True) -> FinanceRe
                 "pret_max": round(sc_b_a.financement, 2),
                 "ecart_pret": round(sc_b_a.financement - solde_a, 2),
                 "argent_degage": round(
-                    sc_b_a.financement - prix_acquisition, 2
+                    sc_b_a.financement - prix_acquisition
+                    if a == 0
+                    else sc_b_a.financement - solde_a,
+                    2,
                 ),
             })
 
