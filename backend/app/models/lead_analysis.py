@@ -337,6 +337,13 @@ class LeadAnalysis(Base, TimestampUpdateMixin):
     cashback_montant: Mapped[Optional[float]] = mapped_column(
         Numeric(14, 2), nullable=True
     )
+    # Moment de l'optimisation (2026-09-08) : 'post_achat' (défaut,
+    # NULL) = l'achat se finance sur les revenus de la fiche ;
+    # 'pre_achat' = le financement initial se base déjà sur les
+    # loyers des unités (cible si optimisée).
+    optimisation_moment: Mapped[Optional[str]] = mapped_column(
+        String(16), nullable=True
+    )
     # Horizon de projection (années) des stratégies de détention —
     # NULL → défaut 5 ans.
     projection_horizon_annees: Mapped[Optional[int]] = mapped_column(
