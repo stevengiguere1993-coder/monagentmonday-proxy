@@ -732,11 +732,7 @@ def _traditionnel_section(rl, trad: dict, *, s):
             else "Post-achat — achat sur les loyers actuels, optimisation au refi",
         ),
         ("Frais d'acquisition", _money(trad.get("frais_demarrage_total"))),
-        ("Dette à rembourser à l'an H (solde + BV + frais roulés)",
-         _money(trad.get("dette_an_h"))),
-        ("Capital remboursé pendant la détention (acquis)",
-         _money(trad.get("capital_rembourse"))),
-        ("Total dépensé (prêt initial + cash) — info",
+        ("Total dépensé (prêt initial + cash)",
          _money(trad.get("total_depense"))),
         (
             "Croissance (loyers / dépenses)",
@@ -781,18 +777,17 @@ def _traditionnel_section(rl, trad: dict, *, s):
     # Verdict de l'an H.
     if best.get("refi_possible"):
         verdict = (
-            f"À l'an {h}, le refinancement {best.get('label')} dégage NET "
-            f"{_money(best.get('argent_dispo'))} après remboursement de la "
-            f"dette ({_money(trad.get('dette_an_h'))}) et récupération de "
-            f"tout le cash injecté ({_money(trad.get('cash_injecte'))})."
+            f"À l'an {h}, le refinancement {best.get('label')} dégage "
+            f"{_money(best.get('argent_dispo'))} (après remboursement du "
+            "prêt d'achat et de la balance de vente) — assez pour "
+            f"ressortir toute la mise de fonds de {_money(trad.get('mdf_cash'))}."
         )
     else:
         verdict = (
-            f"À l'an {h}, le refinancement de référence ({best.get('label')}) "
-            f"ne ressort pas tout le cash injecté "
-            f"({_money(trad.get('cash_injecte'))}) : il manque "
-            f"{_money(best.get('manque'))} après remboursement de la dette "
-            f"({_money(trad.get('dette_an_h'))})."
+            f"À l'an {h}, le meilleur refinancement ({best.get('label')}) "
+            f"dégage {_money(best.get('argent_dispo'))} — il manque "
+            f"{_money(best.get('manque'))} pour ressortir toute la mise "
+            f"de fonds de {_money(trad.get('mdf_cash'))}."
         )
     flow.append(Paragraph(verdict, s["body"]))
     flow.append(Spacer(1, 6))
@@ -800,9 +795,8 @@ def _traditionnel_section(rl, trad: dict, *, s):
     refi_rows = [
         (
             ("★ " if k == best.get("key") else "") + str(labels.get(k, k)),
-            f"prêt max {_money((v or {}).get('financement'))} · cash dégagé "
-            f"{_money(float((v or {}).get('financement') or 0) - float(trad.get('dette_an_h') or 0))}"
-            f" · net {_money((v or {}).get('equite_a_la_fin'))}",
+            f"prêt max {_money((v or {}).get('financement'))} · argent "
+            f"dégagé {_money((v or {}).get('equite_a_la_fin'))}",
         )
         for k, v in refi.items()
     ]
@@ -833,7 +827,7 @@ def _traditionnel_section(rl, trad: dict, *, s):
             ("Équité", "equite"),
             ("Prêt max (réf.)", "pret_max"),
             ("Prêt max − solde", "ecart_pret"),
-            ("Argent net dégagé", "argent_degage"),
+            ("Argent dégagé", "argent_degage"),
         ]
         data_rows = [header] + [
             [lab] + [_money(p.get(key)) for p in proj]
