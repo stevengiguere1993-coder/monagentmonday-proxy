@@ -137,10 +137,8 @@ type LeadDetail = {
   refi_retenu?: string | null;
   balance_vente_montant: number | null;
   balance_vente_taux_pct: number | null;
-  /** Cashback reçu au notaire (coût réel = prix − cashback). */
+  /** Cashback reçu au notaire (prix déclaré = prix + cashback). */
   cashback_montant?: number | null;
-  /** post_achat (défaut) | pre_achat — moment de l'optimisation. */
-  optimisation_moment?: string | null;
   projection_horizon_annees: number | null;
   /** FRACTIONS (0.03 = 3 %) — partagées avec le TRI. */
   tri_croissance_loyers?: number | null;
@@ -950,7 +948,7 @@ export function LeadAnalysisDetailModal({
                   <StatTile
                     icon={Wallet}
                     label={
-                      modeTradTop ? "Cash à sortir (MDF + frais)" : "MDF prêteur B"
+                      modeTradTop ? "Mise de fonds (cash)" : "MDF prêteur B"
                     }
                     value={fmtMoney(hero.mdf)}
                     tone="amber"
@@ -2369,8 +2367,6 @@ function UnitesOptimisationCard({
   revenusBruts,
   nbLogements,
   defautOptimiser,
-  moment,
-  onMomentChange,
   onSave
 }: {
   unitesJson: string | null | undefined;
@@ -2380,9 +2376,6 @@ function UnitesOptimisationCard({
   nbLogements: number | null;
   /** true en prêteur B (tout coché), false en traditionnel. */
   defautOptimiser: boolean;
-  /** Moment de l'optimisation (retour Phil 2026-09-08). */
-  moment?: "post_achat" | "pre_achat";
-  onMomentChange?: (v: "post_achat" | "pre_achat") => void;
   onSave: (json: string | null) => void;
 }) {
   const [rows, setRows] = useState<UniteRow[] | null>(() =>
@@ -2467,36 +2460,6 @@ function UnitesOptimisationCard({
   return (
     <SubCard icon={Gauge} title="Unités & optimisation" cols={2}>
       <div className="space-y-2 sm:col-span-2">
-        {onMomentChange ? (
-          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-brand-800 bg-brand-950/40 px-3 py-2">
-            <label className="text-[10px] font-semibold uppercase tracking-wider text-white/50">
-              Moment de l&apos;optimisation
-            </label>
-            <select
-              value={moment ?? "post_achat"}
-              onChange={(e) =>
-                onMomentChange(
-                  e.target.value === "pre_achat" ? "pre_achat" : "post_achat"
-                )
-              }
-              className="input py-1 text-xs"
-            >
-              <option value="post_achat">
-                Post-achat (défaut) — achat sur les revenus de la fiche,
-                optimisation au refi
-              </option>
-              <option value="pre_achat">
-                Pré-achat — financement initial déjà sur les loyers
-                optimisés ci-dessous
-              </option>
-            </select>
-            <span className="basis-full text-[10px] text-white/40">
-              {moment === "pre_achat"
-                ? "Pré-achat : les scénarios d'achat utilisent la somme des loyers ci-dessous (cible si optimisée, sinon actuel) ; au refi, ces loyers ont crû organiquement depuis l'an 0."
-                : "Post-achat : les scénarios d'achat utilisent les revenus de l'onglet Infos ; les loyers cibles s'appliquent au refi."}
-            </span>
-          </div>
-        ) : null}
         <p className="text-[10px] leading-snug text-white/40">
           Coche les unités que tu optimises (loyer CIBLE au refi). Une
           unité décochée suit la croissance ORGANIQUE des revenus :
@@ -3010,10 +2973,9 @@ function ManualAnalysisSection({
                 onSave={(v) => onPatch("balance_vente_taux_pct", v)}
                 format="percent"
               />
-              {/* Cashback (retours Phil 2026-09-04/08) : le prix saisi est
-                  celui de l'acte (vu par la banque) ; le cashback reçu au
-                  notaire réduit le cash, sans intérêt — coût réel = prix
-                  − cashback. */}
+              {/* Cashback (retour Phil 2026-09-04) : le prix déclaré à
+                  l'institution = prix + cashback → plus gros prêt ; le
+                  cashback reçu au notaire réduit le cash, sans intérêt. */}
               <FieldNumber
                 label="Cashback reçu au notaire ($)"
                 value={data.cashback_montant ?? null}
@@ -3117,12 +3079,6 @@ function ManualAnalysisSection({
             revenusBruts={data.revenus_bruts}
             nbLogements={data.nb_logements}
             defautOptimiser={strategie === "preteur_b"}
-            moment={
-              data.optimisation_moment === "pre_achat"
-                ? "pre_achat"
-                : "post_achat"
-            }
-            onMomentChange={(v) => onPatch("optimisation_moment", v)}
             onSave={(json) => onPatch("unites_json", json)}
           />
         ) : null}
@@ -3331,12 +3287,6 @@ type ProjPoint = {
   valeur: number;
   solde_pret: number;
   equite: number;
-  /** Nouveau prêt possible (programme de référence) cette année. */
-  pret_max?: number;
-  /** Prêt max − solde du prêt en place. */
-  ecart_pret?: number;
-  /** Prêt max − total dépensé (définition Phil). */
-  argent_degage?: number;
 };
 
 type AnalysisResults = {
@@ -3358,8 +3308,7 @@ type AnalysisResults = {
     total: number;
   };
   balance_vente?: { montant: number; taux_pct: number };
-  cashback?: { montant: number; prix_reel: number };
-  optimisation_pre_achat?: boolean;
+  cashback?: { montant: number; prix_bancaire: number };
   traditionnel?: {
     programme_retenu: string;
     labels: Record<string, string>;
@@ -3369,21 +3318,7 @@ type AnalysisResults = {
     balance_vente: number;
     interets_bv_annuels: number;
     cashback?: number;
-    prix_achat?: number;
-    prix_reel?: number;
-    optimisation_pre_achat?: boolean;
-    revenus_achat?: number;
-    detail_mdf_par_programme?: Record<
-      string,
-      {
-        mdf_brute: number;
-        cashback: number;
-        balance_vente: number;
-        mdf_nette: number;
-        frais_cash: number;
-        total_cash: number;
-      }
-    >;
+    prix_bancaire?: number;
     frais_dossier_trad?: number;
     frais_demarrage: Record<string, number>;
     frais_demarrage_total: number;
@@ -3444,12 +3379,7 @@ function ProjectionChart({
   const padB = 28;
   const a0 = proj[0].annee;
   const a1 = proj[proj.length - 1].annee;
-  const aPretMax = proj.some((pt) => pt.pret_max != null);
-  const vals = proj.flatMap((pt) => [
-    pt.valeur,
-    pt.solde_pret,
-    ...(pt.pret_max != null ? [pt.pret_max] : [])
-  ]);
+  const vals = proj.flatMap((pt) => [pt.valeur, pt.solde_pret]);
   // Domaine Y SERRÉ autour des courbes (retour Phil 2026-09-02 : plus
   // de moitié de graphique vide), avec un peu d'air.
   const rawMin = Math.min(...vals);
@@ -3560,27 +3490,11 @@ function ProjectionChart({
         strokeDasharray="6 4"
         strokeLinecap="round"
       />
-      {/* Nouveau prêt possible chaque année (retour Phil 2026-09-08) :
-          l'écart avec le solde = ce qu'un refi dégagerait. */}
-      {aPretMax ? (
-        <path
-          d={line((pt) => pt.pret_max ?? pt.solde_pret)}
-          fill="none"
-          stroke="#7dd3fc"
-          strokeWidth="1.8"
-          strokeDasharray="2 3"
-          strokeLinecap="round"
-        />
-      ) : null}
       {proj.map((pt) => (
         <g key={pt.annee}>
           {/* Survol : les trois chiffres de l'année. */}
           <title>
-            {`An ${pt.annee} — valeur ${fmtMoney(pt.valeur)} · solde ${fmtMoney(pt.solde_pret)} · équité ${fmtMoney(pt.equite)}${
-              pt.pret_max != null
-                ? ` · prêt max ${fmtMoney(pt.pret_max)} (écart ${fmtMoney(pt.ecart_pret ?? 0)})`
-                : ""
-            }`}
+            {`An ${pt.annee} — valeur ${fmtMoney(pt.valeur)} · solde ${fmtMoney(pt.solde_pret)} · équité ${fmtMoney(pt.equite)}`}
           </title>
           <rect
             x={x(pt.annee) - 10}
@@ -3632,17 +3546,6 @@ function ProjectionChart({
       >
         Solde {fmtK(dernier.solde_pret)}
       </text>
-      {aPretMax && dernier.pret_max != null ? (
-        <text
-          x={x(a1) - 4}
-          y={y(dernier.pret_max) - 6}
-          textAnchor="end"
-          fontSize="10"
-          className="fill-sky-300"
-        >
-          Prêt max {fmtK(dernier.pret_max)}
-        </text>
-      ) : null}
     </svg>
   );
 }
@@ -3668,7 +3571,6 @@ function ProjectionSection({
             — Valeur de l&apos;immeuble (RNO ÷ TGA)
           </span>
           <span className="text-amber-300">- - Solde du prêt</span>
-          <span className="text-sky-300">· · Nouveau prêt possible (réf.)</span>
           <span className="text-emerald-300/70">
             ▨ Équité (l&apos;écart entre les deux)
           </span>
@@ -3701,52 +3603,25 @@ function ProjectionSection({
                 ["RNO", (pt) => pt.rno],
                 ["Valeur", (pt) => pt.valeur],
                 ["Solde prêt", (pt) => pt.solde_pret],
-                ["Équité", (pt) => pt.equite],
-                // Retour Phil 2026-09-08 : le nouveau prêt possible chaque
-                // année (programme de référence) face au solde en place.
-                ["Prêt max possible (réf.)", (pt) => pt.pret_max ?? 0, "pret"],
-                ["Prêt max − solde", (pt) => pt.ecart_pret ?? 0, "signe"],
-                [
-                  "Argent dégagé (prêt max − total dépensé)",
-                  (pt) => pt.argent_degage ?? 0,
-                  "signe"
-                ]
-              ] as Array<[string, (pt: ProjPoint) => number, string?]>
-            ).map(([label, pick, style]) => (
-              <tr
-                key={label}
-                className={style === "pret" ? "border-t-2 border-brand-700" : ""}
-              >
-                <td
-                  className={`whitespace-nowrap px-2 py-1 ${
-                    style ? "font-semibold text-white/80" : "text-white/60"
-                  }`}
-                >
+                ["Équité", (pt) => pt.equite]
+              ] as Array<[string, (pt: ProjPoint) => number]>
+            ).map(([label, pick]) => (
+              <tr key={label}>
+                <td className="whitespace-nowrap px-2 py-1 text-white/60">
                   {label}
                 </td>
-                {proj.map((pt) => {
-                  const v = pick(pt);
-                  const couleur =
-                    style === "signe"
-                      ? v >= 0
-                        ? "text-emerald-300"
-                        : "text-rose-300"
-                      : style === "pret"
-                      ? "text-sky-300"
-                      : pt.annee === horizon
-                      ? "text-white/90"
-                      : "text-white/70";
-                  return (
-                    <td
-                      key={pt.annee}
-                      className={`px-2 py-1 text-right font-mono tabular-nums ${couleur} ${
-                        pt.annee === horizon ? "bg-amber-500/5" : ""
-                      }`}
-                    >
-                      {fmtMoney(v)}
-                    </td>
-                  );
-                })}
+                {proj.map((pt) => (
+                  <td
+                    key={pt.annee}
+                    className={`px-2 py-1 text-right font-mono tabular-nums ${
+                      pt.annee === horizon
+                        ? "bg-amber-500/5 text-white/90"
+                        : "text-white/70"
+                    }`}
+                  >
+                    {fmtMoney(pick(pt))}
+                  </td>
+                ))}
               </tr>
             ))}
           </tbody>
@@ -3764,7 +3639,6 @@ function TradColonnes({
   surligne,
   meilleur,
   mdfParProgramme,
-  detailMdf,
   modeRefi,
   totalDepense,
   onRetenir
@@ -3775,11 +3649,6 @@ function TradColonnes({
   /** Le meilleur AUTOMATIQUE (étoile) — peut différer de la référence. */
   meilleur?: string;
   mdfParProgramme?: Record<string, number>;
-  /** Achat : décomposition de la MDF par programme (retour Phil
-   *  2026-09-08 : prix − prêt, − cashback, − BV = nette, + frais). */
-  detailMdf?: NonNullable<
-    AnalysisResults["traditionnel"]
-  >["detail_mdf_par_programme"];
   modeRefi?: boolean;
   /** Refi : « Total dépensé » (prêt initial + tout le cash) — même
    *  valeur pour toutes les colonnes, affichée sous Prêt accordé. */
@@ -3818,59 +3687,12 @@ function TradColonnes({
           }
         ]
       : [
-          ...(detailMdf
-            ? [
-                {
-                  label: "Mise de fonds (prix − prêt)",
-                  pick: (_s: ScenarioResult, k: string) =>
-                    detailMdf?.[k]?.mdf_brute
-                },
-                ...(Object.values(detailMdf).some((d) => d.cashback > 0)
-                  ? [
-                      {
-                        label: "− Cashback reçu au notaire",
-                        pick: (_s: ScenarioResult, k: string) =>
-                          -(detailMdf?.[k]?.cashback ?? 0)
-                      }
-                    ]
-                  : []),
-                ...(Object.values(detailMdf).some(
-                  (d) => d.balance_vente > 0
-                )
-                  ? [
-                      {
-                        label: "− Balance de vente (financée par le vendeur)",
-                        pick: (_s: ScenarioResult, k: string) =>
-                          -(detailMdf?.[k]?.balance_vente ?? 0)
-                      }
-                    ]
-                  : []),
-                {
-                  label: "Mise de fonds NETTE (cash)",
-                  pick: (_s: ScenarioResult, k: string) =>
-                    detailMdf?.[k]?.mdf_nette,
-                  bold: true
-                },
-                {
-                  label: "Frais connexes payés cash",
-                  pick: (_s: ScenarioResult, k: string) =>
-                    detailMdf?.[k]?.frais_cash
-                },
-                {
-                  label: "Total cash à sortir (MDF nette + frais)",
-                  pick: (_s: ScenarioResult, k: string) =>
-                    detailMdf?.[k]?.total_cash,
-                  bold: true
-                }
-              ]
-            : [
-                {
-                  label: "Total cash à sortir (MDF + frais)",
-                  pick: (_s: ScenarioResult, k: string) =>
-                    mdfParProgramme?.[k],
-                  bold: true
-                }
-              ]),
+          {
+            label: "MDF nécessaire (cash)",
+            pick: (_s: ScenarioResult, k: string) =>
+              mdfParProgramme?.[k],
+            bold: true
+          },
           {
             label: "Cashflow annuel",
             pick: (s: ScenarioResult) => s.cashflow_annuel,
@@ -4019,18 +3841,16 @@ function TraditionnelAchatPanel({
       tone="emerald"
       subtitle={
         <>
-          {t.optimisation_pre_achat
-            ? "Financé sur les loyers OPTIMISÉS des unités (pré-achat) et les dépenses actuelles"
-            : "Financé sur les loyers et dépenses ACTUELS"}{" "}
-          (plafonné au prix demandé). Le programme RETENU pilote la
-          mise de fonds et le solde du prêt au refinancement — clique
-          « Retenir » pour en changer.
+          Financé sur les loyers et dépenses ACTUELS (plafonné au prix
+          demandé). Le programme RETENU pilote la mise de fonds et le
+          solde du prêt au refinancement — clique « Retenir » pour en
+          changer.
         </>
       }
       action={
         <div className="rounded-lg border border-amber-400/40 bg-amber-500/10 px-3 py-1.5 text-right">
           <p className="text-[9px] uppercase tracking-wider text-amber-300/80">
-            Cash à sortir (MDF + frais)
+            Mise de fonds (cash)
           </p>
           <p className="font-mono text-sm font-bold tabular-nums text-amber-200">
             {fmtMoney(t.mdf_cash)}
@@ -4064,7 +3884,6 @@ function TraditionnelAchatPanel({
         surligne={t.programme_retenu}
         meilleur={t.programme_retenu_auto}
         mdfParProgramme={t.mdf_par_programme}
-        detailMdf={t.detail_mdf_par_programme}
         onRetenir={
           onPatchField
             ? (k) => onPatchField("programme_achat", k)
@@ -4081,7 +3900,7 @@ function TraditionnelAchatPanel({
         — sans double courtier/notaire ni intérêts de chantier ;
         courtier 1 sur le prêt, frais de dossier fixes.
         {t.cashback && t.cashback > 0
-          ? ` Cashback ${fmtMoney(t.cashback)} reçu au notaire — coût réel de l'immeuble ${fmtMoney(t.prix_reel ?? 0)}.`
+          ? ` Cashback ${fmtMoney(t.cashback)} reçu au notaire — prix déclaré à l'institution ${fmtMoney(t.prix_bancaire ?? 0)}.`
           : ""}
         {t.interets_bv_annuels > 0
           ? ` Intérêts de la balance de vente ${fmtMoney(t.interets_bv_annuels)}/an inclus dans les dépenses.`
@@ -4766,8 +4585,7 @@ function FraisDemarrageBreakdownPanel({
     data.frais_demarrage && fraisTrad
       ? ({ ...data.frais_demarrage, ...fraisTrad } as FraisDemarrageBreakdown)
       : data.frais_demarrage;
-  // Cashback (retours Phil 2026-09-04/08) : reçu au notaire, il réduit
-  // le cash ; le prix saisi est celui de l'acte (vu par la banque).
+  // Cashback (retour Phil 2026-09-04) : prix déclaré = prix + cashback.
   const cashback = Math.max(
     0,
     data.cashback?.montant ?? data.traditionnel?.cashback ?? 0
@@ -4779,11 +4597,12 @@ function FraisDemarrageBreakdownPanel({
   const mdfPctNumeric =
     mdfPctFinal > 1 ? mdfPctFinal / 100 : mdfPctFinal;
   const prixFinal = prixAchat ?? data.prix_achat ?? 0;
+  const prixBancaire = prixFinal + cashback;
   const mdfPctValue = estTrad
-    ? prixFinal - (pretRetenu ?? 0)
+    ? Math.max(0, prixBancaire - (pretRetenu ?? 0))
     : data.mdf_pct_prix_achat ??
       data.mdf_25pct_prix_achat ??
-      mdfPctNumeric * prixFinal;
+      mdfPctNumeric * prixBancaire;
   // Total du MOTEUR pour ce mode (badge « recalcul requis »).
   const mdfTotalStored = estTrad
     ? data.traditionnel?.mdf_cash ?? null
@@ -5024,9 +4843,8 @@ function FraisDemarrageBreakdownPanel({
     }
   }
   const bvDeduiteMdf = data.balance_vente?.montant ?? 0;
-  // Pas de plancher à 0 : un cashback plus gros que la mise de fonds
-  // couvre une partie des frais (retour Phil 2026-09-08).
-  const totalMdfLocal = mdfPctValue - bvDeduiteMdf - cashback + subTotalCash;
+  const totalMdfLocal =
+    Math.max(0, mdfPctValue - bvDeduiteMdf - cashback) + subTotalCash;
 
   if (!frais) return null;
 
@@ -5049,10 +4867,10 @@ function FraisDemarrageBreakdownPanel({
       <p className="mt-2 text-[10px] leading-relaxed text-white/50">
         {estTrad ? (
           <>
-            Mise de fonds = prix d&apos;achat − prêt retenu
-            {cashback > 0 ? " − cashback reçu au notaire" : ""}
-            {" "}− balance de vente (= MDF nette) ; total à sortir en
-            cash = MDF nette + frais payés cash. Rien n&apos;est
+            Total à sortir en cash = prix
+            {cashback > 0 ? " déclaré à l'institution" : " d'achat"} −
+            prêt retenu{cashback > 0 ? " − cashback reçu au notaire" : ""}
+            {" "}− balance de vente + frais payés cash. Rien n&apos;est
             finançable par défaut — coche un poste pour le faire
             financer par l&apos;institution (roulé dans le prêt, 0 cash).
             Courtier 1 sur le prêt, frais de dossier fixes, intérêts de
@@ -5063,7 +4881,7 @@ function FraisDemarrageBreakdownPanel({
         ) : (
           <>
             Total à sortir en cash = {_fmtPctShort(mdfPctNumeric)} du
-            prix d&apos;achat
+            prix{cashback > 0 ? " déclaré" : " d'achat"}
             {cashback > 0 ? " − cashback reçu au notaire" : ""} − balance
             de vente + frais non finançables +{" "}
             {_fmtPctShort(mdfPctNumeric)} des frais finançables. Coche un poste pour le rendre finançable par
@@ -5109,22 +4927,23 @@ function FraisDemarrageBreakdownPanel({
               <td className="px-3 py-2 font-semibold text-amber-200" colSpan={2}>
                 {estTrad ? (
                   <>
-                    Mise de fonds : prix d&apos;achat − prêt retenu
-                    {programmeLabel ? ` (${programmeLabel})` : ""}
-                    {prixFinal > 0 ? (
+                    {cashback > 0 ? "Prix déclaré" : "Prix d'achat"} − prêt
+                    retenu{programmeLabel ? ` (${programmeLabel})` : ""}
+                    {prixBancaire > 0 ? (
                       <span className="ml-1 font-normal text-white/50">
-                        ({fmtMoney(prixFinal)} −{" "}
+                        ({fmtMoney(prixBancaire)} −{" "}
                         {fmtMoney(pretRetenu ?? 0)})
                       </span>
                     ) : null}
                   </>
                 ) : (
                   <>
-                    {_fmtPctShort(mdfPctNumeric)} du prix d&apos;achat
-                    {prixFinal > 0 ? (
+                    {_fmtPctShort(mdfPctNumeric)} du prix
+                    {cashback > 0 ? " déclaré" : " d'achat"}
+                    {prixBancaire > 0 ? (
                       <span className="ml-1 font-normal text-white/50">
                         ({_fmtPctShort(mdfPctNumeric)} ×{" "}
-                        {fmtMoney(prixFinal)})
+                        {fmtMoney(prixBancaire)})
                       </span>
                     ) : null}
                   </>
@@ -5158,7 +4977,7 @@ function FraisDemarrageBreakdownPanel({
                 )}
               </td>
               <td className="px-3 py-2 text-right font-mono font-semibold tabular-nums text-amber-200">
-                {fmtMoney(mdfPctValue - bvDeduiteMdf - cashback)}
+                {fmtMoney(Math.max(0, mdfPctValue - bvDeduiteMdf - cashback))}
               </td>
               <td className="px-3 py-2 text-right font-mono tabular-nums text-emerald-300/70">
                 {bvDeduiteMdf > 0 ? fmtMoney(bvDeduiteMdf) : "—"}
@@ -5309,7 +5128,7 @@ function FraisDemarrageBreakdownPanel({
             <tr className="border-t-2 border-accent-500/50 bg-accent-500/10">
               <td className="px-3 py-2.5 font-bold text-white" colSpan={3}>
                 {estTrad
-                  ? "Total — cash à sortir (MDF nette + frais)"
+                  ? "Total — mise de fonds (cash à l'achat)"
                   : "Total — MDF avec prêteur B"}
                 {mdfTotalStored != null &&
                 Math.abs((mdfTotalStored || 0) - totalMdfLocal) > 1 ? (
@@ -6122,8 +5941,8 @@ function StrategieDetailSubsection({
             : null}
           {(data.cashback?.montant ?? 0) > 0
             ? _ligne2(
-                "Cashback reçu au notaire",
-                `${_fmtMoneyDetail(data.cashback?.montant ?? 0)} · coût réel de l'immeuble ${_fmtMoneyDetail(data.cashback?.prix_reel ?? 0)} → déduit du cash de la mise de fonds, sans intérêt`
+                "Cashback (prix déclaré à l'institution)",
+                `${_fmtMoneyDetail(data.cashback?.montant ?? 0)} reçu au notaire · prix déclaré ${_fmtMoneyDetail(data.cashback?.prix_bancaire ?? 0)} → prêt calculé sur ce prix, cash réduit d'autant`
               )
             : null}
           {trad

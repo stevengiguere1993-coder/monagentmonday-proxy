@@ -3,8 +3,8 @@
 
 Couvre le parcours complet par l'API (fiche → PATCH → moteur → PDF →
 TRI) :
-- cashback : le prix saisi est celui de l'acte, le cashback réduit
-  le cash, total dépensé = coût réel (prix − cashback) + frais ;
+- cashback : prix déclaré, prêt plus gros, cash réduit, total dépensé
+  = prix réel + frais ;
 - composition traditionnelle : frais de dossier fixe, détention,
   intérêts BV provisionnés, postes prêteur B absents ;
 - changement de stratégie → les coches « finançable » sont remises à
@@ -77,8 +77,8 @@ def test_parcours_traditionnel_cashback_et_tri(client, auth_headers, run):
         base, headers=auth_headers,
         json={
             "strategie_acquisition": "traditionnel",
-            "cashback_montant": 20_000,
-            "balance_vente_montant": 20_000,
+            "cashback_montant": 300_000,
+            "balance_vente_montant": 100_000,
             "balance_vente_taux_pct": 6.0,
             "projection_horizon_annees": 5,
         },
@@ -86,39 +86,28 @@ def test_parcours_traditionnel_cashback_et_tri(client, auth_headers, run):
     assert r.status_code == 200, r.text
     fiche = r.json()
     assert fiche["frais_demarrage_financables_json"] is None
-    assert fiche["cashback_montant"] == 20_000
+    assert fiche["cashback_montant"] == 300_000
     res = json.loads(fiche["analysis_results_json"])
     t = res["traditionnel"]
     assert t is not None
-    assert t["cashback"] == 20_000.0
-    assert t["prix_reel"] == 980_000.0
-    # BV 20 k ≤ mise de fonds restante (prix − prêt − cashback) → retenue.
-    assert t["balance_vente"] == 20_000.0
-    assert t["prix_achat"] == 1_000_000.0
+    assert t["cashback"] == 300_000.0
+    assert t["prix_bancaire"] == 1_300_000.0
     f = t["frais_demarrage"]
     assert f["frais_dossier_preteur"] == 5_000.0
     assert f["detention"] == 0.0
-    assert abs(f["interets_balance_vente"] - 20_000 * 0.06 * 5) < 0.01
+    assert abs(f["interets_balance_vente"] - 100_000 * 0.06 * 5) < 0.01
     for k in ("courtier_hypothecaire_2", "evaluateur_2", "notaire_2",
               "interets", "revenus_nets_pendant_projet"):
         assert f[k] == 0.0
     assert abs(f["courtier_hypothecaire_1"] - 0.01 * t["pret_retenu"]) < 0.01
-    # Rien de coché → tout cash ; MDF nette = prix − prêt − cashback −
-    # BV ; cash total = nette + frais ; total dépensé = coût réel + frais.
+    # Rien de coché → tout cash ; MDF = prix déclaré − prêt − cashback −
+    # BV + frais ; total dépensé = prix RÉEL + frais.
     assert t["frais_demarrage_cash"] == t["frais_demarrage_total"]
-    attendu = (
-        1_000_000 - t["pret_retenu"] - 20_000 - 20_000
+    attendu = max(
+        0.0, 1_300_000 - t["pret_retenu"] - 300_000 - 100_000
     ) + t["frais_demarrage_cash"]
     assert abs(t["mdf_cash"] - attendu) < 0.01
-    assert abs(t["total_depense"] - (980_000 + t["frais_demarrage_total"])) < 0.01
-    det = t["detail_mdf_par_programme"][t["programme_retenu"]]
-    assert abs(det["total_cash"] - t["mdf_cash"]) < 0.01
-    # Projection : prêt max / écart / argent dégagé présents et
-    # cohérents avec la colonne de référence à l'an H.
-    p_h = next(p for p in t["projection"] if p["annee"] == t["horizon"])
-    ref = t["refi"][t["best_refi"]["key"]]
-    assert abs(p_h["pret_max"] - ref["financement"]) < 0.01
-    assert abs(p_h["argent_degage"] - ref["equite_a_la_fin"]) < 0.01
+    assert abs(t["total_depense"] - (1_000_000 + t["frais_demarrage_total"])) < 0.01
     # La carte kanban reflète le cash à l'achat du mode traditionnel.
     assert abs(float(fiche["mdf_preteur_b"]) - t["mdf_cash"]) < 0.01
 
@@ -154,7 +143,7 @@ def test_parcours_traditionnel_cashback_et_tri(client, auth_headers, run):
     assert inp["annee_refi"] == 5
     assert abs(inp["mdf"] - t3["mdf_cash"]) < 0.01
     assert abs(
-        inp["rpv_achat"] - (t3["pret_retenu"] + 20_000) / 1_000_000
+        inp["rpv_achat"] - (t3["pret_retenu"] + 100_000) / 1_000_000
     ) < 1e-9
     ref = t3["refi"][t3["best_refi"]["key"]]
     assert abs(inp["valeur2"] - ref["valeur_retenue"]) < 0.01
@@ -167,7 +156,7 @@ def test_parcours_traditionnel_cashback_et_tri(client, auth_headers, run):
     assert len(tri["flux"]["15"]) == 16
 
     # Retour en prêteur B : reset des coches (défauts), TRI à la durée
-    # du projet, cashback toujours actif (déduit du cash).
+    # du projet, cashback toujours actif sur le prix déclaré.
     r = client.patch(
         base, headers=auth_headers,
         json={"strategie_acquisition": "preteur_b", "duree_projet_annees": 3},
@@ -177,43 +166,22 @@ def test_parcours_traditionnel_cashback_et_tri(client, auth_headers, run):
     assert fiche_b["frais_demarrage_financables_json"] is None
     res_b2 = json.loads(fiche_b["analysis_results_json"])
     assert res_b2["traditionnel"] is None
-    assert res_b2["cashback"]["prix_reel"] == 980_000.0
-    assert res_b2["pret_preteur_b"]["sur_prix"] == 750_000.0
-    assert res_b2["mdf_pct_prix_achat"] == 250_000.0
+    assert res_b2["cashback"]["prix_bancaire"] == 1_300_000.0
+    assert res_b2["pret_preteur_b"]["sur_prix"] == 0.75 * 1_300_000
+    assert res_b2["mdf_pct_prix_achat"] == 0.25 * 1_300_000
     # Courtier 1 sur le prêt B (chantier actif).
     assert abs(
-        res_b2["frais_demarrage"]["courtier_hypothecaire_1"] - 7_500
+        res_b2["frais_demarrage"]["courtier_hypothecaire_1"] - 0.01 * 0.75 * 1_300_000
     ) < 0.01
-    # Projection B : prêt max à l'an du refi = prêt de la référence.
-    pb = res_b2["projection_preteur_b"]
-    assert "pret_max" in pb[0] and "argent_degage" in pb[0]
     r = client.get(f"{base}/tri-inputs", headers=auth_headers)
     inp_b = r.json()["inputs"]
     assert inp_b["annee_refi"] == 3
     # En prêteur B la BV est plafonnée à l'assise restante après cashback
-    # (250 k − 20 k ≥ 20 k → 20 k) : dette initiale = prêt B + BV.
+    # (325 k − 300 k = 25 k) : dette initiale = prêt B + BV retenue.
     bv_b = res_b2["balance_vente"]["montant"]
-    assert bv_b == 20_000.0
-    assert abs(inp_b["rpv_achat"] - 0.77) < 1e-9
-    # Pré-achat : bascule + recalcul, revenus d'achat = unités.
-    r = client.patch(
-        base, headers=auth_headers,
-        json={
-            "strategie_acquisition": "traditionnel",
-            "optimisation_moment": "pre_achat",
-            "unites_json": json.dumps(
-                [{"typo": "3.5", "loyer_actuel": 833, "loyer_cible": 1200,
-                  "optimiser": True}] * 10
-            ),
-        },
-    )
-    assert r.status_code == 200, r.text
-    fiche_p = r.json()
-    assert fiche_p["optimisation_moment"] == "pre_achat"
-    tpa = json.loads(fiche_p["analysis_results_json"])["traditionnel"]
-    assert tpa["optimisation_pre_achat"] is True
-    assert abs(tpa["revenus_achat"] - 1200 * 10 * 12) < 0.01
-    r = client.patch(base, headers=auth_headers, json={"optimisation_moment": "nimporte"})
-    assert r.status_code == 422
+    assert abs(bv_b - 25_000) < 0.01
+    assert abs(
+        inp_b["rpv_achat"] - (0.75 * 1_300_000 + bv_b) / 1_000_000
+    ) < 1e-9
     r = client.get(f"{base}/pdf", headers=auth_headers)
     assert r.status_code == 200, r.text

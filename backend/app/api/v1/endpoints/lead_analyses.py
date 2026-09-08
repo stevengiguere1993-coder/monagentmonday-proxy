@@ -158,7 +158,6 @@ class LeadAnalysisRead(BaseModel):
     refi_retenu: Optional[str] = None
     balance_vente_montant: Optional[float] = None
     cashback_montant: Optional[float] = None
-    optimisation_moment: Optional[str] = None
     balance_vente_taux_pct: Optional[float] = None
     projection_horizon_annees: Optional[int] = None
     # Croissances annuelles (FRACTIONS, 0.03 = 3 %) — partagées avec
@@ -291,13 +290,8 @@ class LeadAnalysisUpdate(BaseModel):
         ),
     )
     balance_vente_montant: Optional[float] = Field(default=None, ge=0)
-    # Cashback reçu au notaire (le prix saisi est celui de l'acte ;
-    # coût réel = prix − cashback).
+    # Cashback reçu au notaire (prix déclaré = prix + cashback).
     cashback_montant: Optional[float] = Field(default=None, ge=0)
-    # Moment de l'optimisation : post_achat (défaut) | pre_achat.
-    optimisation_moment: Optional[str] = Field(
-        default=None, pattern=r"^(post_achat|pre_achat)$"
-    )
     balance_vente_taux_pct: Optional[float] = Field(
         default=None, ge=0, le=30
     )
@@ -1866,7 +1860,7 @@ RECALC_INPUT_FIELDS = {
     "taux_interet_preteur_b_projet_pct",
     "frais_demarrage_overrides_json", "frais_demarrage_financables_json",
     "strategie_acquisition", "programme_achat", "refi_retenu",
-    "balance_vente_montant", "cashback_montant", "optimisation_moment",
+    "balance_vente_montant", "cashback_montant",
     "balance_vente_taux_pct", "projection_horizon_annees",
     "tri_croissance_loyers", "tri_croissance_depenses", "unites_json",
 }
@@ -2017,7 +2011,6 @@ async def _compute_and_store(rec, db) -> dict:
         balance_vente_taux_pct=float(rec.balance_vente_taux_pct or 0)
         / 100.0,
         cashback_montant=float(rec.cashback_montant or 0),
-        optimisation_pre_achat=(rec.optimisation_moment == "pre_achat"),
         # Phase 2 — détention + refi an N (achats directs). Les
         # croissances réutilisent celles du TRI (source unique).
         projection_horizon_annees=int(rec.projection_horizon_annees or 5),

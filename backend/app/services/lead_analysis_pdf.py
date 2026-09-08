@@ -640,7 +640,7 @@ _SCENARIO_SHORT = {
 
 _TRAD_POSTE_LABELS = [
     ("courtier_hypothecaire_1", "Courtier hypothécaire (1 % × prêt)"),
-    ("taxes_bienvenue", "Taxes de bienvenue (calculées)"),
+    ("taxes_bienvenue", "Taxes de bienvenue (prix déclaré)"),
     ("evaluateur", "Évaluateur"),
     ("inspection", "Inspection"),
     ("avocat", "Avocat"),
@@ -658,18 +658,18 @@ _TRAD_POSTES_PERMANENTS = {"interets_balance_vente", "detention"}
 
 def _trad_composition_table(rl, trad: dict, *, s):
     """Composition de la mise de fonds — institution traditionnelle :
-    même logique que le tableau de la fiche (prix d'achat − prêt
-    retenu − cashback reçu au notaire − balance de vente = MDF nette,
-    + frais payés cash = total du cash à sortir)."""
+    même logique que le tableau de la fiche (prix déclaré − prêt
+    retenu − cashback − balance de vente + frais payés cash)."""
     labels = trad.get("labels") or {}
     retenu = trad.get("programme_retenu") or ""
-    prix = float(trad.get("prix_achat") or 0)
+    prix_b = float(trad.get("prix_bancaire") or 0)
     cb = float(trad.get("cashback") or 0)
     bv = float(trad.get("balance_vente") or 0)
     pret = float(trad.get("pret_retenu") or 0)
     rows = [(
-        f"Mise de fonds : prix d'achat − prêt retenu ({labels.get(retenu, retenu)})",
-        _money(prix - pret),
+        ("Prix déclaré" if cb > 0 else "Prix d'achat")
+        + f" − prêt retenu ({labels.get(retenu, retenu)})",
+        _money(max(0.0, prix_b - pret)),
     )]
     if cb > 0:
         rows.append(("− Cashback reçu au notaire", _money(-cb)))
@@ -689,10 +689,7 @@ def _trad_composition_table(rl, trad: dict, *, s):
             trad.get("frais_demarrage_total") or 0)) > 0.5:
         rows.append(("dont payés cash (le reste roulé dans le prêt)",
                      _money(cash)))
-    if cb > 0 or bv > 0:
-        rows.append(("Mise de fonds NETTE (après cashback / BV)",
-                     _money(prix - pret - cb - bv)))
-    rows.append(("Total — cash à sortir (MDF nette + frais)",
+    rows.append(("Total — mise de fonds (cash à l'achat)",
                  _money(trad.get("mdf_cash"))))
     return _table_two_col(rl, rows, s=s)
 
@@ -724,13 +721,7 @@ def _traditionnel_section(rl, trad: dict, *, s):
             f"RCD {float(retenu.get('rcd') or 0):.2f}",
         ),
         ("Prêt accordé à l'achat", _money(trad.get("pret_retenu"))),
-        ("Cash à sortir (MDF nette + frais)", _money(trad.get("mdf_cash"))),
-        (
-            "Moment de l'optimisation",
-            "Pré-achat — financement initial sur les loyers optimisés"
-            if trad.get("optimisation_pre_achat")
-            else "Post-achat — achat sur les loyers actuels, optimisation au refi",
-        ),
+        ("MDF (cash à l'achat)", _money(trad.get("mdf_cash"))),
         ("Frais d'acquisition", _money(trad.get("frais_demarrage_total"))),
         ("Total dépensé (prêt initial + cash)",
          _money(trad.get("total_depense"))),
@@ -743,8 +734,8 @@ def _traditionnel_section(rl, trad: dict, *, s):
     if float(trad.get("cashback") or 0) > 0:
         rows.append((
             "Cashback reçu au notaire",
-            f"{_money(trad.get('cashback'))} · coût réel de "
-            f"l'immeuble {_money(trad.get('prix_reel'))}",
+            f"{_money(trad.get('cashback'))} · prix déclaré à "
+            f"l'institution {_money(trad.get('prix_bancaire'))}",
         ))
     if float(trad.get("balance_vente") or 0) > 0:
         rows.append((
@@ -756,14 +747,12 @@ def _traditionnel_section(rl, trad: dict, *, s):
     flow.append(Spacer(1, 6))
 
     # Tableau ACHAT — 4 programmes sur les loyers/dépenses actuels.
-    detail_mdf = trad.get("detail_mdf_par_programme") or {}
     mdf_par = trad.get("mdf_par_programme") or {}
     achat_rows = [
         (
             ("★ " if k == retenu_key else "") + str(labels.get(k, k)),
-            f"prêt {_money((v or {}).get('financement'))} · MDF nette "
-            f"{_money((detail_mdf.get(k) or {}).get('mdf_nette'))} · cash total "
-            f"{_money(mdf_par.get(k))} · cashflow "
+            f"prêt {_money((v or {}).get('financement'))} · "
+            f"MDF {_money(mdf_par.get(k))} · cashflow "
             f"{_money((v or {}).get('cashflow_annuel'))}/an",
         )
         for k, v in achat.items()
@@ -825,9 +814,6 @@ def _traditionnel_section(rl, trad: dict, *, s):
             ("Valeur", "valeur"),
             ("Solde prêt", "solde_pret"),
             ("Équité", "equite"),
-            ("Prêt max (réf.)", "pret_max"),
-            ("Prêt max − solde", "ecart_pret"),
-            ("Argent dégagé", "argent_degage"),
         ]
         data_rows = [header] + [
             [lab] + [_money(p.get(key)) for p in proj]
@@ -1709,7 +1695,7 @@ def _render_bytes(
 
     # ── Composition de la mise de fonds ─────────────────────────
     # Institution traditionnelle : reflet du tableau de l'onglet
-    # Analyse (prix − prêt retenu − cashback − BV = MDF nette, + frais).
+    # Analyse (prix déclaré − prêt retenu − cashback − BV + frais).
     _trad_comp = (
         (results or {}).get("traditionnel")
         if getattr(rec, "strategie_acquisition", None) in (
@@ -1907,7 +1893,7 @@ def _render_bytes(
         # ligne de base de la fiche.
         _cb = float((results.get("cashback") or {}).get("montant") or 0)
         _bv = float((results.get("balance_vente") or {}).get("montant") or 0)
-        _assise_lbl = "MDF (% × prix d'achat)"
+        _assise_lbl = "MDF (% × prix" + (" déclaré" if _cb > 0 else " d'achat") + ")"
         if _cb > 0:
             _assise_lbl += f" − cashback {_money(_cb)}"
         if _bv > 0:
