@@ -251,16 +251,18 @@ def test_traditionnel_balance_vente_et_depenses():
         use_aph_select=False,
     )
     t = r.to_dict()["traditionnel"]
-    assert t["interets_bv_annuels"] == 6_000.0
+    # BV plafonnée à la mise de fonds restante (prix − prêt retenu).
+    bv = min(100_000.0, max(0.0, 1_000_000 - t["pret_retenu"]))
+    assert abs(t["balance_vente"] - bv) < 0.01
+    assert abs(t["interets_bv_annuels"] - bv * 0.06) < 0.01
     dep = t["achat"]["conventionnel"]["depenses"]
     assert dep["interets_balance_vente"] == 0.0
-    # Ligne propre : 100 k × 6 % × 5 ans.
-    assert abs(t["frais_demarrage"]["interets_balance_vente"] - 30_000) < 0.01
+    # Ligne propre : BV × 6 % × 5 ans.
+    assert abs(
+        t["frais_demarrage"]["interets_balance_vente"] - bv * 0.06 * 5
+    ) < 0.01
     # La MDF du retenu déduit la BV ; frais tous cash (rien de coché).
-    attendu = max(
-        0.0,
-        1_000_000 - t["pret_retenu"] - 100_000,
-    ) + t["frais_demarrage_cash"]
+    attendu = (1_000_000 - t["pret_retenu"] - bv) + t["frais_demarrage_cash"]
     assert abs(t["mdf_cash"] - attendu) < 0.01
     assert t["frais_demarrage_cash"] == t["frais_demarrage_total"]
 
@@ -335,46 +337,38 @@ def test_courtier_1_sur_le_pret_en_chantier():
 
 
 def test_cashback_preteur_b():
-    """Cashback 300 k$ sur 1 M$ : la banque voit 1,3 M$ → prêt B 975 k$
-    (75 %), assise de MDF 325 k$ − 300 k$ reçus au notaire = 25 k$ ;
-    total dépensé reste prix RÉEL + frais."""
+    """Cashback 100 k$ sur 1 M$ (retour Phil 2026-09-08 : le prix saisi
+    EST celui vu par la banque) : le prêt B et les frais ne bougent
+    pas, le cash de la MDF baisse de 100 k$ et le total dépensé = coût
+    réel (900 k$) + frais."""
     sans = compute_all(_inputs(chantier_actif=True), use_aph_select=False)
     avec = compute_all(
-        _inputs(chantier_actif=True, cashback_montant=300_000.0),
+        _inputs(chantier_actif=True, cashback_montant=100_000.0),
         use_aph_select=False,
     )
     d = avec.to_dict()
-    assert d["cashback"] == {"montant": 300_000.0, "prix_bancaire": 1_300_000.0}
-    assert avec.pret_preteur_b_sur_prix == 975_000.0
-    assert d["mdf_pct_prix_achat"] == 325_000.0
-    # MDF = 25 k$ d'assise + frais cash (frais recalculés sur 1,3 M$).
+    assert d["cashback"] == {"montant": 100_000.0, "prix_reel": 900_000.0}
+    assert avec.pret_preteur_b_sur_prix == 750_000.0
+    assert d["mdf_pct_prix_achat"] == 250_000.0
+    assert abs(avec.frais_demarrage.total - sans.frais_demarrage.total) < 0.01
+    assert abs((sans.mdf_preteur_b - avec.mdf_preteur_b) - 100_000) < 0.01
     assert abs(
-        avec.mdf_preteur_b - (25_000 + avec.frais_demarrage.total
-                              - _frais_finances(avec))
-    ) < 1.0
-    # − 300 k$ reçus, + frais recalculés sur 1,3 M$ (taxes de bienvenue,
-    # courtier, dossier, portage sur un prêt plus gros).
-    assert avec.mdf_preteur_b < sans.mdf_preteur_b - 100_000
-    assert avec.frais_demarrage.total > sans.frais_demarrage.total
-    # Total dépensé (prix d'acquisition) = prix réel + frais.
-    assert abs(
-        avec.prix_acquisition - (1_000_000 + avec.frais_demarrage.total)
+        avec.prix_acquisition - (900_000 + avec.frais_demarrage.total)
     ) < 0.01
-    # Taxes de bienvenue et courtier sur le prix / prêt déclarés.
-    assert avec.frais_demarrage.taxes_bienvenue > sans.frais_demarrage.taxes_bienvenue
-    assert abs(avec.frais_demarrage.courtier_hypothecaire_1 - 9_750) < 0.01
-
-
-def _frais_finances(r) -> float:
-    """Portion des frais finançables prise par le prêteur B (défaut :
-    rapport efficacité / développement / travaux, à 75 %)."""
-    return r.pret_preteur_b_frais_finances
+    # Courtier 1 sur le prêt B (chantier) : 1 % × 750 k$.
+    assert abs(avec.frais_demarrage.courtier_hypothecaire_1 - 7_500) < 0.01
+    # Argent dégagé au refi = prêt − total dépensé (coût réel + frais).
+    assert abs(
+        (avec.refi_schl.equite_a_la_fin or 0)
+        - (avec.refi_schl.financement - avec.prix_acquisition)
+    ) < 0.01
 
 
 def test_cashback_traditionnel():
-    """Cashback en institution traditionnelle : la valeur marchande
-    plafond passe à 1,3 M$ (prêt plus gros), la MDF déduit le cashback,
-    total dépensé = prix réel + frais."""
+    """Cashback en institution traditionnelle : le prêt ne bouge pas
+    (la banque voit le prix saisi), la MDF nette = prix − prêt −
+    cashback, total dépensé = coût réel + frais, et chaque colonne
+    porte sa décomposition (brute / nette / frais / total)."""
     sans = compute_all(
         _inputs(strategie="traditionnel", programme_achat="conventionnel"),
         use_aph_select=False,
@@ -389,64 +383,103 @@ def test_cashback_traditionnel():
     )
     ts, ta = sans.to_dict()["traditionnel"], avec.to_dict()["traditionnel"]
     assert ta["cashback"] == 300_000.0
-    assert ta["prix_bancaire"] == 1_300_000.0
-    assert ta["pret_retenu"] >= ts["pret_retenu"]
-    attendu = max(
-        0.0, 1_300_000 - ta["pret_retenu"] - 300_000
-    ) + ta["frais_demarrage_cash"]
-    assert abs(ta["mdf_cash"] - attendu) < 0.01
+    assert ta["prix_reel"] == 700_000.0
+    assert ta["pret_retenu"] == ts["pret_retenu"]
+    assert abs(ta["mdf_cash"] - (ts["mdf_cash"] - 300_000)) < 0.01
     assert abs(
-        ta["total_depense"] - (1_000_000 + ta["frais_demarrage_total"])
+        ta["total_depense"] - (700_000 + ta["frais_demarrage_total"])
     ) < 0.01
-    # Chaque colonne d'achat porte sa propre MDF (courtier sur SON prêt).
     for prog, sc in ta["achat"].items():
-        att = max(
-            0.0, 1_300_000 - sc["financement"] - 300_000
-        )
-        assert ta["mdf_par_programme"][prog] >= att - 0.01
+        d = ta["detail_mdf_par_programme"][prog]
+        assert abs(d["mdf_brute"] - (1_000_000 - sc["financement"])) < 0.01
+        assert d["cashback"] == 300_000.0
+        assert abs(d["mdf_nette"] - (d["mdf_brute"] - 300_000)) < 0.01
+        assert abs(d["total_cash"] - (d["mdf_nette"] + d["frais_cash"])) < 0.01
+        assert abs(ta["mdf_par_programme"][prog] - d["total_cash"]) < 0.01
+    # Cohérence haut/bas : à l'an H, prêt max de la projection = prêt
+    # accordé de la référence et argent dégagé = celui de la colonne.
+    ref = ta["refi"][ta["best_refi"]["key"]]
+    p_h = next(p for p in ta["projection"] if p["annee"] == ta["horizon"])
+    assert abs(p_h["pret_max"] - ref["financement"]) < 0.01
+    assert abs(p_h["argent_degage"] - ref["equite_a_la_fin"]) < 0.01
+    assert abs(p_h["ecart_pret"] - (p_h["pret_max"] - p_h["solde_pret"])) < 0.02
 
 
-def test_refi_reference_manuelle():
-    """La référence choisie (refi_retenu) pilote le verdict et la
-    carte, même si un autre programme est « meilleur »."""
-    # Mode B : forcer SCHL standard comme référence.
-    r = compute_all(
-        _inputs(chantier_actif=True, refi_retenu="refi_schl"),
-        use_aph_select=False,
-    )
-    assert r.best_refi_program == "SCHL standard"
-    assert abs(
-        (r.best_refi_amount or 0)
-        - (r.refi_schl.equite_a_la_fin or 0)
-    ) < 0.01
-
-    # Traditionnel : référence schl_std ; le meilleur automatique reste
-    # exposé séparément (étoile).
-    r2 = compute_all(
-        _inputs(strategie="traditionnel", refi_retenu="schl_std"),
-        use_aph_select=False,
-    )
-    t = r2.to_dict()["traditionnel"]
-    assert t["best_refi"]["key"] == "schl_std"
-    assert t["meilleur_refi_key"] in t["refi"]
-
-
-def test_unites_mode_traditionnel():
-    """Refi an H : unité optimisée = cible dès l'an 1 puis croît ; non
-    optimisée = actuel × (1+cl)^a."""
+def test_optimisation_pre_achat():
+    """Retour Phil 2026-09-08 : en pré-achat, l'achat se finance sur les
+    loyers des unités (cible si optimisée, sinon actuel) et au refi
+    ces loyers ont crû organiquement depuis l'an 0. Post-achat (défaut)
+    = revenus de la fiche à l'achat, cibles au refi."""
+    unites = _unites(6, 4)  # 6 × 1 200 $ + 4 × actuel
     actuel = 100_000 / 12 / 10
-    r = compute_all(
+    rev_opt = (6 * 1_200.0 + 4 * actuel) * 12.0
+    post = compute_all(
         _inputs(
-            strategie="traditionnel",
-            chantier_actif=True,
-            unites=_unites(6, 4),
-            projection_horizon_annees=5,
-            croissance_loyers=0.03,
-            croissance_depenses=0.03,
+            strategie="traditionnel", chantier_actif=True, unites=unites,
+            projection_horizon_annees=5, croissance_loyers=0.03,
         ),
         use_aph_select=False,
     )
-    t = r.to_dict()["traditionnel"]
-    p1 = t["projection"][1]
-    attendu_1 = (6 * 1_200.0 + 4 * actuel * 1.03) * 12.0
-    assert abs(p1["revenus"] - attendu_1) < 0.01
+    pre = compute_all(
+        _inputs(
+            strategie="traditionnel", chantier_actif=True, unites=unites,
+            projection_horizon_annees=5, croissance_loyers=0.03,
+            optimisation_pre_achat=True,
+        ),
+        use_aph_select=False,
+    )
+    tp, tq = post.to_dict()["traditionnel"], pre.to_dict()["traditionnel"]
+    assert tp["optimisation_pre_achat"] is False
+    assert tq["optimisation_pre_achat"] is True
+    # Achat : revenus de la fiche (post) vs somme des unités (pré).
+    assert abs(tp["revenus_achat"] - 100_000) < 0.01
+    assert abs(tq["revenus_achat"] - rev_opt) < 0.01
+    assert abs(tp["achat"]["conventionnel"]["revenus_totaux"] - 100_000) < 0.01
+    assert abs(tq["achat"]["conventionnel"]["revenus_totaux"] - rev_opt) < 0.01
+    # Le prêt du jeu de test est plafonné au prix (1 M$) : la valeur
+    # économique, elle, monte avec les loyers optimisés.
+    assert (
+        tq["achat"]["conventionnel"]["valeur_eco_rcd"]
+        > tp["achat"]["conventionnel"]["valeur_eco_rcd"]
+    )
+    # Refi an 5 : pré = toutes les unités × 1,03^5 ; post = cibles ×
+    # 1,03^4 + actuels × 1,03^5.
+    attendu_pre = (6 * 1_200.0 + 4 * actuel) * 1.03 ** 5 * 12.0
+    attendu_post = (6 * 1_200.0 * 1.03 ** 4 + 4 * actuel * 1.03 ** 5) * 12.0
+    assert abs(tq["refi"]["conventionnel"]["revenus_totaux"] - attendu_pre) < 0.01
+    assert abs(tp["refi"]["conventionnel"]["revenus_totaux"] - attendu_post) < 0.01
+    assert abs(tq["projection"][0]["revenus"] - rev_opt) < 0.01
+
+    # Mode prêteur B : pré-achat = cibles × croissance sur la durée.
+    b_post = compute_all(
+        _inputs(chantier_actif=True, unites=unites, croissance_loyers=0.03),
+        use_aph_select=False,
+    )
+    b_pre = compute_all(
+        _inputs(
+            chantier_actif=True, unites=unites, croissance_loyers=0.03,
+            optimisation_pre_achat=True,
+        ),
+        use_aph_select=False,
+    )
+    assert abs(
+        b_post.refi_schl.revenus_totaux
+        - (6 * 1_200.0 + 4 * actuel * 1.03 ** 2) * 12.0
+    ) < 0.01
+    assert abs(
+        b_pre.refi_schl.revenus_totaux
+        - (6 * 1_200.0 + 4 * actuel) * 1.03 ** 2 * 12.0
+    ) < 0.01
+    # Projection B : à l'an du refi, prêt max = prêt de la référence.
+    pb = b_pre.to_dict()["projection_preteur_b"]
+    refs = {
+        s.config.label: s
+        for s in (b_pre.refi_schl, b_pre.refi_aph_50, b_pre.refi_aph_100)
+        if s is not None
+    }
+    ref_b = refs[b_pre.best_refi_program]
+    assert abs(pb[0]["pret_max"] - ref_b.financement) < 0.01
+    assert abs(
+        pb[0]["argent_degage"] - (ref_b.financement - b_pre.prix_acquisition)
+    ) < 0.01
+    assert abs(pb[0]["ecart_pret"] - (pb[0]["pret_max"] - pb[0]["solde_pret"])) < 0.02
