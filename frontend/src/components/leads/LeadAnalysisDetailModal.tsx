@@ -137,8 +137,6 @@ type LeadDetail = {
   refi_retenu?: string | null;
   balance_vente_montant: number | null;
   balance_vente_taux_pct: number | null;
-  /** Cashback reçu au notaire (prix déclaré = prix + cashback). */
-  cashback_montant?: number | null;
   projection_horizon_annees: number | null;
   /** FRACTIONS (0.03 = 3 %) — partagées avec le TRI. */
   tri_croissance_loyers?: number | null;
@@ -759,25 +757,6 @@ export function LeadAnalysisDetailModal({
         scen.refi_schl ||
         null;
     }
-    // Institution traditionnelle : les tuiles reflètent l'onglet
-    // Refinancement (prêt de la référence, cash à l'achat, cashflow,
-    // argent dégagé) — plus les chiffres du mode prêteur B.
-    const trad = results?.traditionnel ?? null;
-    if (trad) {
-      const refKey = trad.best_refi?.key;
-      const ref = refKey ? trad.refi?.[refKey] ?? null : null;
-      return {
-        askingPrice: data.asking_price,
-        bestRefiFinancement: ref?.financement ?? null,
-        bestRefiProgram: trad.best_refi
-          ? `${trad.best_refi.label} · refi an ${trad.horizon}`
-          : null,
-        mdf: trad.mdf_cash,
-        cashflow: ref?.cashflow_annuel ?? null,
-        equite: trad.best_refi?.argent_dispo ?? null,
-        hasResults: true
-      };
-    }
     return {
       askingPrice: data.asking_price,
       // Montant de prêt accordé du scénario gagnant (champ `financement`,
@@ -967,7 +946,7 @@ export function LeadAnalysisDetailModal({
                   />
                   <StatTile
                     icon={PiggyBank}
-                    label={modeTradTop ? "Argent dégagé (refi)" : "Équité à la fin"}
+                    label="Équité à la fin"
                     value={hero.equite != null ? fmtMoney(hero.equite) : "—"}
                     tone={
                       hero.equite == null
@@ -1388,8 +1367,6 @@ export function LeadAnalysisDetailModal({
 
 /** Les 12 intrants envoyés au moteur (formes exactes du backend). */
 type TriInputs = {
-  /** Année du refinancement : horizons n, n+5, n+10. */
-  annee_refi?: number;
   prix: number;
   rpv_achat: number;
   pret_constr: number;
@@ -1436,48 +1413,43 @@ type TriResult = {
     multiplicateur: number;
     cap_rate: number;
   };
-  /** Clés = années des horizons (n, n+5, n+10). */
-  horizons: Record<string, TriHorizon>;
-  sommaire: Record<string, number>;
-  flux: Record<string, number[]>;
-  tri: Record<string, number | null>;
-  annee_refi?: number;
-  horizons_list?: number[];
+  horizons: Record<"2" | "7" | "12", TriHorizon>;
+  sommaire: {
+    mise_initiale: number;
+    cash_an2: number;
+    cash_an7: number;
+    cash_an12: number;
+    valeur_parts_an12: number;
+    total_cash_sans_vente: number;
+  };
+  flux: Record<"2" | "7" | "12", number[]>;
+  tri: {
+    an2: number | null;
+    an7: number | null;
+    an12: number | null;
+  };
 };
 
-/** Les 3 horizons modélisés (ordre d'affichage) — dérivés du résultat :
- *  année du refi de l'analyse, +5 et +10 ans (retour Phil 2026-09-04). */
-type TriHorizonDef = { key: string; tri: string; label: string };
-function triHorizons(result: TriResult): TriHorizonDef[] {
-  const list =
-    result.horizons_list && result.horizons_list.length === 3
-      ? result.horizons_list
-      : [2, 7, 12];
-  return list.map((h) => ({
-    key: String(h),
-    tri: `an${h}`,
-    label: `an ${h}`
-  }));
-}
+/** Les 3 horizons modélisés (ordre d'affichage). */
+const TRI_HORIZONS: Array<{ key: "2" | "7" | "12"; tri: "an2" | "an7" | "an12"; label: string }> = [
+  { key: "2", tri: "an2", label: "an 2" },
+  { key: "7", tri: "an7", label: "an 7" },
+  { key: "12", tri: "an12", label: "an 12" }
+];
 
 /** Champs « repris de l'analyse » : libellé + format d'affichage. */
 const TRI_AUTO_FIELDS: Array<{
   key: keyof TriInputs;
   label: string;
-  format: "money" | "percent" | "number";
+  format: "money" | "percent";
 }> = [
-  {
-    key: "annee_refi",
-    label: "Année du refinancement (horizons n, n+5, n+10)",
-    format: "number"
-  },
   { key: "prix", label: "Prix d'achat", format: "money" },
   { key: "rpv_achat", label: "Ratio prêt-valeur (pré-construction)", format: "percent" },
   { key: "pret_constr", label: "Prêt construction", format: "money" },
   { key: "mdf", label: "Mise de fonds nécessaire", format: "money" },
-  { key: "loyers2", label: "Loyers bruts stabilisés (année du refi)", format: "money" },
-  { key: "dep2", label: "Dépenses d'opération (année du refi)", format: "money" },
-  { key: "valeur2", label: "Valeur de l'immeuble stabilisée (année du refi)", format: "money" },
+  { key: "loyers2", label: "Loyers bruts stabilisés (an 2)", format: "money" },
+  { key: "dep2", label: "Dépenses d'opération (an 2)", format: "money" },
+  { key: "valeur2", label: "Valeur de l'immeuble stabilisée (an 2)", format: "money" },
   { key: "rpv_refi", label: "Ratio prêt-valeur au refinancement", format: "percent" }
 ];
 
@@ -1585,7 +1557,7 @@ function LeadTriTab({ analysisId }: { analysisId: number }) {
         icon={Percent}
         title="TRI investisseur"
         tone="emerald"
-        subtitle="Rendement de l'investisseur selon l'horizon de sortie — année du refi de l'analyse, puis +5 et +10 ans, basé sur la référence de refinancement."
+        subtitle="Rendement de l'investisseur selon l'horizon de sortie — basé sur le scénario de refinancement retenu."
       >
         {!analysisReady ? (
           <div className="mb-4 flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/[0.06] px-3 py-2 text-xs text-amber-200">
@@ -1648,7 +1620,7 @@ function LeadTriTab({ analysisId }: { analysisId: number }) {
             <div className="grid gap-3 px-3.5 pb-3.5 sm:grid-cols-2 lg:grid-cols-4">
               {TRI_AUTO_FIELDS.map((f) => {
                 const isPct = f.format === "percent";
-                const raw = (inputs[f.key] as number | undefined) ?? 0;
+                const raw = inputs[f.key] as number;
                 return (
                   <FieldNumber
                     key={f.key}
@@ -1657,7 +1629,7 @@ function LeadTriTab({ analysisId }: { analysisId: number }) {
                     onSave={(v) =>
                       setField(f.key, v == null ? null : isPct ? v / 100 : v)
                     }
-                    format={f.format === "number" ? undefined : f.format}
+                    format={f.format}
                   />
                 );
               })}
@@ -1707,7 +1679,6 @@ function LeadTriTab({ analysisId }: { analysisId: number }) {
 /** Bloc de résultats du TRI (vedette + métriques + tableaux). */
 function TriResults({ result }: { result: TriResult }) {
   const [detailOpen, setDetailOpen] = useState(false);
-  const TRI_HORIZONS = triHorizons(result);
 
   return (
     <div className="space-y-5">
@@ -1841,7 +1812,6 @@ function TriResults({ result }: { result: TriResult }) {
 
 /** Tableau dense des projections par horizon (type « détails des calculs »). */
 function TriDetailTable({ result }: { result: TriResult }) {
-  const TRI_HORIZONS = triHorizons(result);
   const rows: Array<{ label: string; pick: (h: TriHorizon) => string }> = [
     { label: "Loyers bruts", pick: (h) => fmtMoney(h.loyers) },
     { label: "Dépenses d'opération", pick: (h) => fmtMoney(h.depenses) },
@@ -1915,9 +1885,7 @@ function TriDetailTable({ result }: { result: TriResult }) {
             </td>
           </tr>
           <tr className="border-t border-brand-800/60">
-            <td className="px-2 py-1 text-white/60">
-              RNO à l&apos;année du refi
-            </td>
+            <td className="px-2 py-1 text-white/60">RNO an 2</td>
             <td className="px-2 py-1 text-right font-mono tabular-nums text-white/90">
               {fmtMoney(result.bases.rno2)}
             </td>
@@ -1942,9 +1910,7 @@ function TriDetailTable({ result }: { result: TriResult }) {
 
 /** Lignes de temps des flux (3 séries an 0 → 12). */
 function TriFluxTable({ result }: { result: TriResult }) {
-  const TRI_HORIZONS = triHorizons(result);
-  const dernier = Number(TRI_HORIZONS[TRI_HORIZONS.length - 1].key) || 12;
-  const years = Array.from({ length: dernier + 1 }, (_, i) => i);
+  const years = Array.from({ length: 13 }, (_, i) => i);
   return (
     <div className="mt-1">
       <h4 className="text-[10px] font-semibold uppercase tracking-wider text-accent-500">
@@ -2973,15 +2939,6 @@ function ManualAnalysisSection({
                 onSave={(v) => onPatch("balance_vente_taux_pct", v)}
                 format="percent"
               />
-              {/* Cashback (retour Phil 2026-09-04) : le prix déclaré à
-                  l'institution = prix + cashback → plus gros prêt ; le
-                  cashback reçu au notaire réduit le cash, sans intérêt. */}
-              <FieldNumber
-                label="Cashback reçu au notaire ($)"
-                value={data.cashback_montant ?? null}
-                onSave={(v) => onPatch("cashback_montant", v)}
-                format="money"
-              />
             </>
           ) : null}
         </SubCard>
@@ -3114,8 +3071,6 @@ function ManualAnalysisSection({
                 onPatch("frais_demarrage_financables_json", j)
               }
               mode={trad ? "traditionnel" : "preteur_b"}
-              chantier={stratChantier}
-              dureeProjet={data.duree_projet_annees}
               pretRetenu={trad?.pret_retenu}
               programmeLabel={
                 trad
@@ -3259,7 +3214,6 @@ type FraisDemarrageBreakdown = {
   courtier_hypothecaire_1: number;
   courtier_hypothecaire_2: number;
   interets_balance_vente?: number;
-  detention?: number;
   taxes_bienvenue: number;
   evaluateur: number;
   evaluateur_2: number;
@@ -3308,7 +3262,6 @@ type AnalysisResults = {
     total: number;
   };
   balance_vente?: { montant: number; taux_pct: number };
-  cashback?: { montant: number; prix_bancaire: number };
   traditionnel?: {
     programme_retenu: string;
     labels: Record<string, string>;
@@ -3317,9 +3270,6 @@ type AnalysisResults = {
     croissance_depenses: number;
     balance_vente: number;
     interets_bv_annuels: number;
-    cashback?: number;
-    prix_bancaire?: number;
-    frais_dossier_trad?: number;
     frais_demarrage: Record<string, number>;
     frais_demarrage_total: number;
     mdf_cash: number;
@@ -3897,11 +3847,7 @@ function TraditionnelAchatPanel({
         t.frais_demarrage_cash !== t.frais_demarrage_total
           ? ` (dont ${fmtMoney(t.frais_demarrage_cash)} cash)`
           : ""}{" "}
-        — sans double courtier/notaire ni intérêts de chantier ;
-        courtier 1 sur le prêt, frais de dossier fixes.
-        {t.cashback && t.cashback > 0
-          ? ` Cashback ${fmtMoney(t.cashback)} reçu au notaire — prix déclaré à l'institution ${fmtMoney(t.prix_bancaire ?? 0)}.`
-          : ""}
+        — sans double courtier/notaire ni intérêts de chantier.
         {t.interets_bv_annuels > 0
           ? ` Intérêts de la balance de vente ${fmtMoney(t.interets_bv_annuels)}/an inclus dans les dépenses.`
           : ""}{" "}
@@ -4480,8 +4426,6 @@ const FRAIS_KEYS: Array<keyof FraisDemarrageBreakdown> = [
   // Poste PERMANENT (retour Phil 2026-09-02) : 0 sans balance de
   // vente, non finançable par défaut.
   "interets_balance_vente",
-  // Réserve de détention (institution traditionnelle), 0 par défaut.
-  "detention",
   "revenus_nets_pendant_projet"
 ];
 
@@ -4495,11 +4439,8 @@ function _fmtPctShort(frac: number): string {
 
 function buildFraisLabels(
   mdfPctNumeric: number,
-  tauxInteretPreteurB: number | null | undefined,
-  opts?: { trad?: boolean; chantier?: boolean; nAnnees?: number }
+  tauxInteretPreteurB: number | null | undefined
 ): Array<[keyof FraisDemarrageBreakdown, string]> {
-  const trad = !!opts?.trad;
-  const nAnnees = opts?.nAnnees ?? 2;
   const inverseMdf = 1 - mdfPctNumeric;
   const tauxLbl =
     tauxInteretPreteurB != null && !Number.isNaN(tauxInteretPreteurB)
@@ -4507,11 +4448,7 @@ function buildFraisLabels(
       : "taux prêteur B";
   const interetsLabel = `Intérêts pendant projet (${_fmtPctShort(inverseMdf)} × prix × ${tauxLbl} × durée)`;
   const labels: Record<keyof FraisDemarrageBreakdown, string> = {
-    courtier_hypothecaire_1: trad
-      ? "Courtier hypothécaire (1 % × prêt retenu)"
-      : opts?.chantier
-      ? "Courtier hypothécaire (1 % × prêt prêteur B)"
-      : "Courtier hypothécaire (1 % × prix d'achat)",
+    courtier_hypothecaire_1: "Courtier hypothécaire (1 % × prix d'achat)",
     courtier_hypothecaire_2: "Courtier hypothécaire 2 (1 % × financement APH)",
     taxes_bienvenue: "Taxes de bienvenue (Montréal, tiers progressifs)",
     evaluateur: "Évaluateur agréé",
@@ -4524,14 +4461,10 @@ function buildFraisLabels(
     frais_developpement: "Frais de développement",
     frais_negociations: "Frais de négociations",
     frais_travaux: "Travaux estimés",
-    frais_dossier_preteur: trad
-      ? "Frais de dossier de l'institution (montant fixe)"
-      : "Frais de dossier du prêteur",
+    frais_dossier_preteur: "Frais de dossier du prêteur",
     interets: interetsLabel,
-    interets_balance_vente: `Intérêts balance de vente (montant × taux × ${nAnnees} an${
-      nAnnees > 1 ? "s" : ""
-    })`,
-    detention: "Détention (réserve pour la période de détention)",
+    interets_balance_vente:
+      "Intérêts balance de vente (montant × taux BV × durée)",
     revenus_nets_pendant_projet: "Revenus nets pendant projet (négatif)"
   };
   return FRAIS_KEYS.map((k) => [k, labels[k]] as [keyof FraisDemarrageBreakdown, string]);
@@ -4554,9 +4487,7 @@ function FraisDemarrageBreakdownPanel({
   onPatchFinancables,
   mode = "preteur_b",
   pretRetenu,
-  programmeLabel,
-  chantier,
-  dureeProjet
+  programmeLabel
 }: {
   data: AnalysisResults;
   overridesJson?: string | null;
@@ -4571,42 +4502,19 @@ function FraisDemarrageBreakdownPanel({
   mode?: "preteur_b" | "traditionnel";
   pretRetenu?: number;
   programmeLabel?: string;
-  /** Chantier stratégies actif (courtier 1 sur le prêt). */
-  chantier?: boolean;
-  /** Durée du projet (prêteur B) — libellé des intérêts BV. */
-  dureeProjet?: number | null;
 }) {
   const estTrad = mode === "traditionnel";
-  // Institution traditionnelle : la source des montants est la liste
-  // du MOTEUR pour ce mode (courtier sur le prêt, dossier fixe,
-  // intérêts BV provisionnés, détention) — miroir exact du calcul.
-  const fraisTrad = estTrad ? data.traditionnel?.frais_demarrage : undefined;
-  const frais: FraisDemarrageBreakdown | undefined =
-    data.frais_demarrage && fraisTrad
-      ? ({ ...data.frais_demarrage, ...fraisTrad } as FraisDemarrageBreakdown)
-      : data.frais_demarrage;
-  // Cashback (retour Phil 2026-09-04) : prix déclaré = prix + cashback.
-  const cashback = Math.max(
-    0,
-    data.cashback?.montant ?? data.traditionnel?.cashback ?? 0
-  );
-  const nAnneesRefiPanel = estTrad
-    ? data.traditionnel?.horizon ?? 5
-    : dureeProjet ?? 2;
+  const frais = data.frais_demarrage;
   const mdfPctFinal = mdfPct ?? data.mdf_preteur_b_pct ?? 25;
   const mdfPctNumeric =
     mdfPctFinal > 1 ? mdfPctFinal / 100 : mdfPctFinal;
   const prixFinal = prixAchat ?? data.prix_achat ?? 0;
-  const prixBancaire = prixFinal + cashback;
   const mdfPctValue = estTrad
-    ? Math.max(0, prixBancaire - (pretRetenu ?? 0))
+    ? Math.max(0, prixFinal - (pretRetenu ?? 0))
     : data.mdf_pct_prix_achat ??
       data.mdf_25pct_prix_achat ??
-      mdfPctNumeric * prixBancaire;
-  // Total du MOTEUR pour ce mode (badge « recalcul requis »).
-  const mdfTotalStored = estTrad
-    ? data.traditionnel?.mdf_cash ?? null
-    : mdfPreteurBDb ?? data.mdf_preteur_b ?? null;
+      mdfPctNumeric * prixFinal;
+  const mdfTotalStored = mdfPreteurBDb ?? data.mdf_preteur_b ?? null;
 
   const overrides = useMemo<Record<string, number>>(() => {
     if (!overridesJson) return {};
@@ -4650,8 +4558,7 @@ function FraisDemarrageBreakdownPanel({
 
   const fraisLabels = buildFraisLabels(
     mdfPctNumeric,
-    data.taux_interet_preteur_b_projet,
-    { trad: estTrad, chantier, nAnnees: nAnneesRefiPanel }
+    data.taux_interet_preteur_b_projet
   );
   // Libellés des postes FIXES indexés par clé, pour résoudre rapidement
   // un label par défaut quand le registre n'impose rien.
@@ -4757,38 +4664,9 @@ function FraisDemarrageBreakdownPanel({
         });
       }
     }
-    // Institution traditionnelle : les postes propres au chantier
-    // prêteur B n'existent pas (2e courtier/évaluateur/notaire,
-    // portage, revenus pendant projet) — retour Phil 2026-09-04.
-    const exclusTrad = new Set([
-      "courtier_hypothecaire_2",
-      "evaluateur_2",
-      "notaire_2",
-      "interets",
-      "revenus_nets_pendant_projet"
-    ]);
-    const out = estTrad ? rows.filter((r) => !exclusTrad.has(r.key)) : rows;
-    // Postes PERMANENTS : toujours présents même si le registre des
-    // frais (Paramètres) ne les connaît pas encore.
-    const permanents = estTrad
-      ? ["interets_balance_vente", "detention"]
-      : ["interets_balance_vente"];
-    for (const pk of permanents) {
-      if (!out.some((r) => r.key === pk)) {
-        out.push({
-          key: pk,
-          label: fixedLabelByKey[pk] || pk,
-          computed: frais
-            ? Number((frais as Record<string, number>)[pk] || 0)
-            : 0,
-          isCustom: false
-        });
-      }
-    }
-    return out;
+    return rows;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
-    estTrad,
     JSON.stringify(registry),
     JSON.stringify(fraisLabels),
     JSON.stringify(customFrais),
@@ -4812,11 +4690,8 @@ function FraisDemarrageBreakdownPanel({
       ? (estTrad ? 0 : displayVal * mdfPctNumeric)
       : displayVal;
     const pretForRow = isFin ? displayVal - cashForRow : null;
-    // Poste fixe nul et non-override → masqué (comme avant). Perso et
-    // postes permanents (intérêts BV, détention) : toujours affichés.
-    const permanent =
-      key === "interets_balance_vente" || (estTrad && key === "detention");
-    const hidden = !row.isCustom && !overridden && !row.computed && !permanent;
+    // Poste fixe nul et non-override → masqué (comme avant). Perso : toujours.
+    const hidden = !row.isCustom && !overridden && !row.computed;
     return { overridden, displayVal, isFin, cashForRow, pretForRow, hidden };
   }
 
@@ -4843,8 +4718,7 @@ function FraisDemarrageBreakdownPanel({
     }
   }
   const bvDeduiteMdf = data.balance_vente?.montant ?? 0;
-  const totalMdfLocal =
-    Math.max(0, mdfPctValue - bvDeduiteMdf - cashback) + subTotalCash;
+  const totalMdfLocal = mdfPctValue - bvDeduiteMdf + subTotalCash;
 
   if (!frais) return null;
 
@@ -4867,24 +4741,18 @@ function FraisDemarrageBreakdownPanel({
       <p className="mt-2 text-[10px] leading-relaxed text-white/50">
         {estTrad ? (
           <>
-            Total à sortir en cash = prix
-            {cashback > 0 ? " déclaré à l'institution" : " d'achat"} −
-            prêt retenu{cashback > 0 ? " − cashback reçu au notaire" : ""}
-            {" "}− balance de vente + frais payés cash. Rien n&apos;est
+            Total à sortir en cash = prix d&apos;achat − prêt retenu −
+            balance de vente + frais non finançables. Rien n&apos;est
             finançable par défaut — coche un poste pour le faire
-            financer par l&apos;institution (roulé dans le prêt, 0 cash).
-            Courtier 1 sur le prêt, frais de dossier fixes, intérêts de
-            la balance de vente provisionnés pour la détention, poste
-            « Détention » à 0 par défaut. Clique un montant pour le
-            modifier.
+            financer par l&apos;institution (roulé dans le prêt).
+            Clique un montant pour le modifier.
           </>
         ) : (
           <>
             Total à sortir en cash = {_fmtPctShort(mdfPctNumeric)} du
-            prix{cashback > 0 ? " déclaré" : " d'achat"}
-            {cashback > 0 ? " − cashback reçu au notaire" : ""} − balance
-            de vente + frais non finançables +{" "}
-            {_fmtPctShort(mdfPctNumeric)} des frais finançables. Coche un poste pour le rendre finançable par
+            prix d&apos;achat − balance de vente + frais non
+            finançables + {_fmtPctShort(mdfPctNumeric)} des frais
+            finançables. Coche un poste pour le rendre finançable par
             le prêteur B (défaut : rapport efficacité, frais
             développement, travaux). Clique un montant pour le
             modifier.
@@ -4900,24 +4768,16 @@ function FraisDemarrageBreakdownPanel({
               <th className="px-3 py-2 text-right">Valeur</th>
               <th
                 className="w-20 px-3 py-2 text-center"
-                title={
-                  estTrad
-                    ? "Activé = ce poste est roulé dans le prêt de l'institution (0 cash)"
-                    : "Activé = ce poste est financé par le prêteur B, tu ne paies que le pct en cash"
-                }
+                title="Activé = ce poste est financé par le prêteur B, tu ne paies que le pct en cash"
               >
                 Finançable
               </th>
               <th className="px-3 py-2 text-right">Cash à sortir</th>
               <th
                 className="px-3 py-2 text-right"
-                title={
-                  estTrad
-                    ? "Portion financée par l'institution (postes cochés) et balance de vente"
-                    : "Portion de la valeur financée par le prêteur B (valeur − cash) pour les postes finançables"
-                }
+                title="Portion de la valeur financée par le prêteur B (valeur − cash) pour les postes finançables"
               >
-                {estTrad ? "Financé par l'institution" : "Prêt prêteur B"}
+                Prêt prêteur B
               </th>
             </tr>
           </thead>
@@ -4927,23 +4787,16 @@ function FraisDemarrageBreakdownPanel({
               <td className="px-3 py-2 font-semibold text-amber-200" colSpan={2}>
                 {estTrad ? (
                   <>
-                    {cashback > 0 ? "Prix déclaré" : "Prix d'achat"} − prêt
-                    retenu{programmeLabel ? ` (${programmeLabel})` : ""}
-                    {prixBancaire > 0 ? (
-                      <span className="ml-1 font-normal text-white/50">
-                        ({fmtMoney(prixBancaire)} −{" "}
-                        {fmtMoney(pretRetenu ?? 0)})
-                      </span>
-                    ) : null}
+                    Prix d&apos;achat − prêt retenu
+                    {programmeLabel ? ` (${programmeLabel})` : ""}
                   </>
                 ) : (
                   <>
-                    {_fmtPctShort(mdfPctNumeric)} du prix
-                    {cashback > 0 ? " déclaré" : " d'achat"}
-                    {prixBancaire > 0 ? (
+                    {_fmtPctShort(mdfPctNumeric)} du prix d&apos;achat
+                    {prixFinal > 0 ? (
                       <span className="ml-1 font-normal text-white/50">
                         ({_fmtPctShort(mdfPctNumeric)} ×{" "}
-                        {fmtMoney(prixBancaire)})
+                        {fmtMoney(prixFinal)})
                       </span>
                     ) : null}
                   </>
@@ -4953,31 +4806,16 @@ function FraisDemarrageBreakdownPanel({
                   colonne Finançable, en vert, à gauche du cash
                   (retour Phil 2026-09-02). */}
               <td className="px-3 py-2 text-right font-mono tabular-nums text-emerald-300">
-                {bvDeduiteMdf > 0 || cashback > 0 ? (
-                  <span className="flex flex-col items-end leading-tight">
-                    {cashback > 0 ? (
-                      <span title="Cashback reçu au notaire — réduit le cash, sans intérêt">
-                        − {fmtMoney(cashback)}{" "}
-                        <span className="text-[9px] text-emerald-300/70">
-                          cashback
-                        </span>
-                      </span>
-                    ) : null}
-                    {bvDeduiteMdf > 0 ? (
-                      <span title="Balance de vente — financée par le vendeur">
-                        − {fmtMoney(bvDeduiteMdf)}{" "}
-                        <span className="text-[9px] text-emerald-300/70">
-                          BV
-                        </span>
-                      </span>
-                    ) : null}
+                {bvDeduiteMdf > 0 ? (
+                  <span title="Balance de vente — financée par le vendeur">
+                    − {fmtMoney(bvDeduiteMdf)}
                   </span>
                 ) : (
                   <span className="text-white/40">—</span>
                 )}
               </td>
               <td className="px-3 py-2 text-right font-mono font-semibold tabular-nums text-amber-200">
-                {fmtMoney(Math.max(0, mdfPctValue - bvDeduiteMdf - cashback))}
+                {fmtMoney(Math.max(0, mdfPctValue - bvDeduiteMdf))}
               </td>
               <td className="px-3 py-2 text-right font-mono tabular-nums text-emerald-300/70">
                 {bvDeduiteMdf > 0 ? fmtMoney(bvDeduiteMdf) : "—"}
@@ -5057,9 +4895,7 @@ function FraisDemarrageBreakdownPanel({
                         onToggle={() => key && toggleFinancable(key)}
                         title={
                           isFin
-                            ? estTrad
-                              ? "Finançable — roulé dans le prêt de l'institution, 0 cash"
-                              : `Finançable — payé seulement à ${_fmtPctShort(mdfPctNumeric)} en cash`
+                            ? `Finançable — payé seulement à ${_fmtPctShort(mdfPctNumeric)} en cash`
                             : "Non finançable — payé 100 % en cash"
                         }
                       />
@@ -5101,11 +4937,7 @@ function FraisDemarrageBreakdownPanel({
               </td>
               <td
                 className="px-3 py-2 text-right font-mono font-semibold tabular-nums text-emerald-300"
-                title={
-                  estTrad
-                    ? "Total roulé dans le prêt de l'institution"
-                    : "Total financé par le prêteur B (= « dont financé par prêteur B »)"
-                }
+                title="Total financé par le prêteur B (= « dont financé par prêteur B »)"
               >
                 {subTotalFinanced > 0.5 ? fmtMoney(subTotalFinanced) : "—"}
               </td>
@@ -5116,9 +4948,7 @@ function FraisDemarrageBreakdownPanel({
                   className="px-3 py-1.5 pl-5 text-[10px] font-semibold text-emerald-300"
                   colSpan={4}
                 >
-                  {estTrad
-                    ? "dont financé par l'institution"
-                    : "dont financé par prêteur B"}
+                  dont financé par prêteur B
                 </td>
                 <td className="px-3 py-1.5 text-right font-mono text-[10px] font-semibold tabular-nums text-emerald-300">
                   +{fmtMoney(subTotalFinanced)}
@@ -5637,6 +5467,7 @@ const DEPENSES_LABELS: Array<[keyof DepensesBreakdown, string]> = [
   ["wifi", "WiFi"],
   ["thermopompes", "Thermopompes (APH)"],
   ["autres_normalisations", "Autres normalisations (% × revenus)"],
+  ["interets_balance_vente", "Intérêts balance de vente"],
   ["autres", "Autres dépenses"]
 ];
 
@@ -5939,12 +5770,6 @@ function StrategieDetailSubsection({
                 trad.labels[trad.programme_retenu] || trad.programme_retenu
               )
             : null}
-          {(data.cashback?.montant ?? 0) > 0
-            ? _ligne2(
-                "Cashback (prix déclaré à l'institution)",
-                `${_fmtMoneyDetail(data.cashback?.montant ?? 0)} reçu au notaire · prix déclaré ${_fmtMoneyDetail(data.cashback?.prix_bancaire ?? 0)} → prêt calculé sur ce prix, cash réduit d'autant`
-              )
-            : null}
           {trad
             ? _ligne2("Horizon de détention", `${trad.horizon} ans`)
             : null}
@@ -5957,7 +5782,7 @@ function StrategieDetailSubsection({
           {bv > 0
             ? _ligne2(
                 "Balance de vente (déduite de la MDF)",
-                `${_fmtMoneyDetail(bv)} · taux ${(data.balance_vente?.taux_pct ?? 0).toFixed(2)} % · intérêts provisionnés ${_fmtMoneyDetail((trad ? trad.frais_demarrage?.interets_balance_vente : data.frais_demarrage?.interets_balance_vente) ?? 0)} (${trad ? `${trad.interets_bv_annuels.toFixed(0)} $/an × ${trad.horizon} ans` : "montant × taux × durée"})`
+                `${_fmtMoneyDetail(bv)} · taux ${(data.balance_vente?.taux_pct ?? 0).toFixed(2)} % · intérêts ${_fmtMoneyDetail(data.frais_demarrage?.interets_balance_vente ?? trad?.interets_bv_annuels ?? 0)}`
               )
             : _ligne2("Balance de vente", "aucune")}
           {trad
