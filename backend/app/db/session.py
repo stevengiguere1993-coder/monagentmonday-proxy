@@ -532,21 +532,39 @@ async def ensure_critical_columns() -> None:
         ("qbo_transactions_loyers", "suggestion_bail_id", "INTEGER"),
         ("qbo_transactions_loyers", "suggestion_confiance", "DOUBLE PRECISION"),
     )
+    # Incident 2026-09-08 : un ALTER bloqué par un verrou (trafic réel
+    # pendant le déploiement) ne doit ni pendre ni échouer en silence →
+    # verrou borné (Postgres), 3 tentatives espacées, erreur journalisée
+    # au niveau ERROR. Le contrôle de schéma de /health prend le relais
+    # si une colonne manque toujours.
+    import asyncio as _asyncio
+
     for table, column, col_type in critical_columns:
-        try:
-            async with engine.begin() as conn:
-                await conn.execute(
-                    text(
-                        f"ALTER TABLE {table} "
-                        f"ADD COLUMN IF NOT EXISTS {column} {col_type}"
+        derniere = None
+        for tentative in range(1, 4):
+            try:
+                async with engine.begin() as conn:
+                    if conn.dialect.name == "postgresql":
+                        await conn.execute(
+                            text("SET LOCAL lock_timeout = '15s'")
+                        )
+                    await conn.execute(
+                        text(
+                            f"ALTER TABLE {table} "
+                            f"ADD COLUMN IF NOT EXISTS {column} {col_type}"
+                        )
                     )
-                )
-        except Exception as exc:  # noqa: BLE001
-            log.warning(
-                "ensure_critical_columns %s.%s failed: %s",
+                derniere = None
+                break
+            except Exception as exc:  # noqa: BLE001
+                derniere = exc
+                await _asyncio.sleep(2.0 * tentative)
+        if derniere is not None:
+            log.error(
+                "ensure_critical_columns %s.%s failed after 3 attempts: %s",
                 table,
                 column,
-                exc,
+                derniere,
             )
 
     # Élargissements de colonnes critiques (transaction par colonne →

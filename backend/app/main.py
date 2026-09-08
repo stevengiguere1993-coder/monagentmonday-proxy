@@ -9,7 +9,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1 import api_router
@@ -61,6 +61,24 @@ async def _run_startup_tasks() -> None:
         await ensure_critical_columns()
     except Exception as exc:
         logger.warning("ensure_critical_columns failed during startup: %s", exc)
+
+    # Garde-fou (incident 2026-09-08) : TOUTE colonne nullable déclarée
+    # par un modèle et absente en base est ajoutée ici — plus besoin de
+    # se souvenir de la lister à la main. Puis contrôle final : s'il en
+    # manque encore, /health répond 503 et Render garde l'ancienne
+    # version en ligne.
+    try:
+        from app.db.schema_check import ajouter_colonnes_manquantes, schema_ok
+
+        await ajouter_colonnes_manquantes()
+        ok, colonnes, _tables = await schema_ok(force=True)
+        if not ok:
+            logger.error(
+                "DÉMARRAGE AVEC SCHÉMA INCOMPLET — /health répondra 503 : %s",
+                ", ".join(colonnes),
+            )
+    except Exception as exc:
+        logger.warning("schema_check failed during startup: %s", exc)
 
     # STAGING : premier compte owner sur base vide (no-op partout ailleurs).
     try:
@@ -593,8 +611,25 @@ async def root() -> dict:
 
 
 @app.get("/health", tags=["health"])
-async def health_check() -> dict:
-    return {"status": "healthy", "environment": settings.env}
+async def health_check(response: Response) -> dict:
+    """Santé de l'API + contrôle de schéma (incident 2026-09-08) : si
+    une colonne attendue par les modèles manque en base, l'API se
+    déclare ``degraded`` (503) → Render ne bascule pas le trafic sur
+    une version cassée, l'ancienne continue de servir."""
+    from app.db.schema_check import schema_ok
+
+    ok, colonnes, tables = await schema_ok()
+    if not ok:
+        response.status_code = 503
+    return {
+        "status": "healthy" if ok else "degraded",
+        "environment": settings.env,
+        "schema": {
+            "ok": ok,
+            "colonnes_manquantes": colonnes,
+            "tables_absentes": tables,
+        },
+    }
 
 
 @app.get("/api/v1/ping", tags=["health"])
