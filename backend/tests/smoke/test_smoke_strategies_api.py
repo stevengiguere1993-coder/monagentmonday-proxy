@@ -217,3 +217,49 @@ def test_parcours_traditionnel_cashback_et_tri(client, auth_headers, run):
     assert r.status_code == 422
     r = client.get(f"{base}/pdf", headers=auth_headers)
     assert r.status_code == 200, r.text
+
+
+def test_parcours_residentiel(client, auth_headers, run):
+    """Mode résidentiel par l'API : champs, moteur, carte kanban, PDF, TRI."""
+    fid = _mk_fiche(run)
+    base = f"/api/v1/lead-analyses/{fid}"
+    r = client.patch(
+        base, headers=auth_headers,
+        json={
+            "strategie_acquisition": "residentiel",
+            "ltv_residentiel_pct": 75,
+            "amort_residentiel_annees": 30,
+            "depenses_residentiel_json": json.dumps(
+                [{"label": "Gazon", "montant": 1500}]
+            ),
+            "depenses_optimisation_supp": 1000,
+        },
+    )
+    assert r.status_code == 200, r.text
+    r = client.post(f"{base}/run-financial-analysis", headers=auth_headers)
+    assert r.status_code == 200, r.text
+    out = r.json()
+    res = out["analysis_results"]["residentiel"]
+    assert res is not None
+    assert res["pret_retenu"] == 750_000.0
+    assert res["amort_annees"] == 30
+    assert abs(res["depenses_reelles"] - (10_000 + 800 + 4_000 + 1_500)) < 0.01
+    assert abs(res["depenses_optimisees"] - res["depenses_reelles"] - 1_000) < 0.01
+    assert res["alerte_8_unites"] is True
+    assert out["best_refi_program"].startswith("Résidentiel (prêt 75 %)")
+    assert abs(float(out["best_refi_amount"]) - res["cashflow_optimise"]) < 0.01
+    fiche = client.get(base, headers=auth_headers).json()
+    assert abs(float(fiche["mdf_preteur_b"]) - res["mdf_cash"]) < 0.01
+    assert fiche["ltv_residentiel_pct"] == 75
+    # PDF reflet.
+    r = client.get(f"{base}/pdf", headers=auth_headers)
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"].startswith("application/pdf")
+    # TRI : intrants du mode résidentiel.
+    inp = client.get(f"{base}/tri-inputs", headers=auth_headers).json()["inputs"]
+    assert abs(inp["rpv_achat"] - 0.75) < 1e-9
+    assert abs(inp["mdf"] - res["mdf_cash"]) < 0.01
+    assert inp["annee_refi"] == 5
+    # Validation.
+    r = client.patch(base, headers=auth_headers, json={"ltv_residentiel_pct": 150})
+    assert r.status_code == 422

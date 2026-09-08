@@ -2060,6 +2060,10 @@ async def init_db() -> None:
             ("lead_analyses", "balance_vente_taux_pct", "NUMERIC(5,3)"),
             ("lead_analyses", "cashback_montant", "NUMERIC(14,2)"),
             ("lead_analyses", "optimisation_moment", "VARCHAR(16)"),
+            ("lead_analyses", "ltv_residentiel_pct", "NUMERIC(5,2)"),
+            ("lead_analyses", "amort_residentiel_annees", "INTEGER"),
+            ("lead_analyses", "depenses_residentiel_json", "TEXT"),
+            ("lead_analyses", "depenses_optimisation_supp", "NUMERIC(14,2)"),
             ("lead_analyses", "projection_horizon_annees", "INTEGER"),
             # Phase 3 : optimisation par unité (liste JSON).
             ("lead_analyses", "unites_json", "TEXT"),

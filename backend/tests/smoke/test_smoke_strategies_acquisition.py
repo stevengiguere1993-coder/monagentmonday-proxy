@@ -497,3 +497,94 @@ def test_optimisation_pre_achat():
         pb[0]["argent_degage"] - (ref_b.financement - b_pre.prix_acquisition)
     ) < 0.01
     assert abs(pb[0]["ecart_pret"] - (pb[0]["pret_max"] - pb[0]["solde_pret"])) < 0.02
+
+
+def test_residentiel_cashflow():
+    """Retour Phil 2026-09-08 — 3e façon d'acheter : prêt = 80 % du
+    prix, dépenses RÉELLES (fiche + lignes libres), cashflow = revenus −
+    dépenses − hypothèque ; l'optimisation (unités) augmente les revenus
+    et les dépenses ajoutées ; alerte au-delà de 8 unités."""
+    from app.services.lead_analysis_finance import pmt_canadian
+
+    r = compute_all(
+        _inputs(
+            strategie="residentiel",
+            chantier_actif=True,
+            unites=_unites(6, 4),
+            depenses_residentiel=[
+                {"label": "Gazon", "montant": 1_200},
+                {"label": "Déneigement", "montant": 800},
+            ],
+            depenses_optimisation_supp=2_000.0,
+            projection_horizon_annees=5,
+            croissance_loyers=0.03,
+            croissance_depenses=0.03,
+        ),
+        use_aph_select=False,
+    )
+    d = r.to_dict()
+    res = d["residentiel"]
+    assert res is not None and d["traditionnel"] is None
+    assert res["ltv"] == 0.8
+    assert res["pret_retenu"] == 800_000.0
+    paiement = pmt_canadian(0.04, 25 * 12, 800_000.0)
+    assert abs(res["paiement_mensuel"] - paiement) < 0.01
+    assert abs(res["hypotheque_annuelle"] - paiement * 12) < 0.01
+    # Dépenses réelles = fiche (10 000 + 800 + 4 000) + lignes (2 000).
+    assert abs(res["depenses_reelles"] - 16_800) < 0.01
+    assert abs(res["depenses_optimisees"] - 18_800) < 0.01
+    assert [l["label"] for l in res["depenses_detail"]["lignes"]] == [
+        "Gazon", "Déneigement"
+    ]
+    actuel = 100_000 / 12 / 10
+    rev_opt = (6 * 1_200.0 + 4 * actuel) * 12.0
+    assert abs(res["revenus_actuels"] - 100_000) < 0.01
+    assert abs(res["revenus_optimises"] - rev_opt) < 0.01
+    assert abs(
+        res["cashflow_actuel"] - (100_000 - 16_800 - paiement * 12)
+    ) < 0.01
+    assert abs(
+        res["cashflow_optimise"] - (rev_opt - 18_800 - paiement * 12)
+    ) < 0.01
+    assert res["alerte_8_unites"] is True  # 10 logements
+    # Frais : courtier 1 % du prêt, dossier fixe, pas de rapport d'efficacité.
+    f = res["frais_demarrage"]
+    assert abs(f["courtier_hypothecaire_1"] - 8_000) < 0.01
+    assert f["frais_dossier_preteur"] == 5_000.0
+    assert f["rapport_efficacite"] == 0.0
+    assert f["interets"] == 0.0
+    # Cash à sortir = (prix − prêt) + frais cash ; total dépensé = prix + frais.
+    md = res["detail_mdf"]
+    assert md["mdf_brute"] == 200_000.0
+    assert abs(md["total_cash"] - (200_000 + res["frais_demarrage_cash"])) < 0.01
+    assert abs(res["mdf_cash"] - md["total_cash"]) < 0.01
+    assert abs(res["total_depense"] - (1_000_000 + res["frais_demarrage_total"])) < 0.01
+    assert abs(
+        res["rendement_cash_optimise"] - res["cashflow_optimise"] / res["mdf_cash"]
+    ) < 1e-3  # arrondi à 4 décimales
+    # Projection : an 0 = actuel (post-achat), an 1 = optimisé (+ dépenses
+    # supp.) avec croissance, hypothèque fixe, capital remboursé qui monte.
+    p0, p1 = res["projection"][0], res["projection"][1]
+    assert abs(p0["cashflow"] - res["cashflow_actuel"]) < 0.01
+    assert abs(p1["revenus"] - (6 * 1_200.0 + 4 * actuel * 1.03) * 12.0) < 0.01
+    assert abs(p1["depenses"] - 18_800 * 1.03) < 0.01
+    assert p1["hypotheque"] == p0["hypotheque"]
+    assert p1["capital_rembourse"] > p0["capital_rembourse"] == 0.0
+    assert abs(p1["cashflow_cumule"] - (p0["cashflow"] + p1["cashflow"])) < 0.02
+    assert r.best_refi_program is not None  # le mode B tourne toujours
+
+    # Cashback + ratio 75 % + pré-achat.
+    r2 = compute_all(
+        _inputs(
+            strategie="residentiel", chantier_actif=True, unites=_unites(6, 4),
+            ltv_residentiel=0.75, cashback_montant=50_000.0,
+            optimisation_pre_achat=True,
+        ),
+        use_aph_select=False,
+    )
+    res2 = r2.to_dict()["residentiel"]
+    assert res2["pret_retenu"] == 750_000.0
+    assert res2["detail_mdf"]["mdf_nette"] == 250_000.0 - 50_000.0
+    assert abs(res2["revenus_achat"] - rev_opt) < 0.01
+    assert abs(res2["projection"][0]["revenus"] - rev_opt) < 0.01
+    assert res2["prix_reel"] == 950_000.0
