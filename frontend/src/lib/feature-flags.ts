@@ -17,10 +17,7 @@ function surStaging(): boolean {
 }
 
 export function calculateurStrategiesActif(): boolean {
-  // GO de Phil 2026-09-08 : le calculateur à stratégies (prêteur B /
-  // institution traditionnelle / résidentiel) est ouvert partout. Une
-  // fiche sans stratégie garde le calcul historique.
-  return true;
+  return surStaging();
 }
 
 // Chantier « chacun son IA » (Phil, 2026-09-01) : connexion IA

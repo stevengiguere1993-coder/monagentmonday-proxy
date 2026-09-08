@@ -2216,20 +2216,7 @@ def compute_all(inputs: FinanceInputs, use_aph_select: bool = True) -> FinanceRe
         amort_r = max(1, int(inputs.amort_residentiel_annees or 25))
         taux_r = float(inputs.taux_interet_achat or 0.0)
         pret_r = ltv_r * inputs.prix_achat
-        # Ratio > 80 % : prime d'assurance prêt (SCHL / Sagen / Canada
-        # Guaranty — grille standard 2,80 / 3,10 / 4,00 %), ajoutée au
-        # prêt et amortie avec lui (pas de cash).
-        if ltv_r > 0.90:
-            taux_prime_r = 0.040
-        elif ltv_r > 0.85:
-            taux_prime_r = 0.031
-        elif ltv_r > 0.80 + 1e-9:
-            taux_prime_r = 0.028
-        else:
-            taux_prime_r = 0.0
-        prime_r = pret_r * taux_prime_r
-        pret_total_r = pret_r + prime_r
-        paiement_r = pmt_canadian(taux_r, amort_r * 12, pret_total_r)
+        paiement_r = pmt_canadian(taux_r, amort_r * 12, pret_r)
         hyp_r = paiement_r * 12.0
         h_r = max(1, int(inputs.projection_horizon_annees or 5))
         cl_r = float(inputs.croissance_loyers or 0.0)
@@ -2281,15 +2268,8 @@ def compute_all(inputs: FinanceInputs, use_aph_select: bool = True) -> FinanceRe
         else:
             rev_opt_r = rev_actuel_r
         rev_achat_r = rev_opt_r if _pre_achat else rev_actuel_r
-        rno_actuel_r = rev_actuel_r - dep_r
-        rno_opt_r = rev_opt_r - dep_r_opt
-        cf_actuel_r = rno_actuel_r - hyp_r
-        cf_opt_r = rno_opt_r - hyp_r
-        nb_r = max(1, int(inputs.nombre_logements or 0))
-        # Capital remboursé la 1re année (équité bâtie par les loyers).
-        capital_an1_r = pret_total_r - solde_pret_canadien(
-            pret_total_r, taux_r, amort_r, 1
-        )
+        cf_actuel_r = rev_actuel_r - dep_r - hyp_r
+        cf_opt_r = rev_opt_r - dep_r_opt - hyp_r
 
         # Frais d'acquisition : même logique que le traditionnel
         # (courtier 1 sur le prêt, dossier fixe, intérêts BV provisionnés,
@@ -2370,26 +2350,16 @@ def compute_all(inputs: FinanceInputs, use_aph_select: bool = True) -> FinanceRe
             dep_a = dep_base * (1 + cd_r) ** a
             cf_a = rev_a - dep_a - hyp_r
             cum_cf += cf_a
-            solde_a = solde_pret_canadien(pret_total_r, taux_r, amort_r, a)
-            solde_prec = (
-                solde_pret_canadien(pret_total_r, taux_r, amort_r, a - 1)
-                if a > 0
-                else pret_total_r
-            )
-            capital_annuel_a = solde_prec - solde_a if a > 0 else 0.0
+            solde_a = solde_pret_canadien(pret_r, taux_r, amort_r, a)
             proj_r.append({
                 "annee": a,
                 "revenus": round(rev_a, 2),
                 "depenses": round(dep_a, 2),
-                "rno": round(rev_a - dep_a, 2),
                 "hypotheque": round(hyp_r, 2),
                 "cashflow": round(cf_a, 2),
                 "cashflow_cumule": round(cum_cf, 2),
-                "cashflow_porte_mois": round(cf_a / nb_r / 12.0, 2),
                 "solde_pret": round(solde_a, 2),
-                "capital_annuel": round(capital_annuel_a, 2),
-                "cashflow_plus_capital": round(cf_a + capital_annuel_a, 2),
-                "capital_rembourse": round(pret_total_r - solde_a, 2),
+                "capital_rembourse": round(pret_r - solde_a, 2),
                 "rendement_cash": (
                     round(cf_a / total_cash_r, 4) if total_cash_r > 0 else None
                 ),
@@ -2406,9 +2376,6 @@ def compute_all(inputs: FinanceInputs, use_aph_select: bool = True) -> FinanceRe
             "amort_annees": amort_r,
             "taux_interet": taux_r,
             "pret_retenu": round(pret_r, 2),
-            "taux_prime": taux_prime_r,
-            "prime_assurance": round(prime_r, 2),
-            "pret_total": round(pret_total_r, 2),
             "paiement_mensuel": round(paiement_r, 2),
             "hypotheque_annuelle": round(hyp_r, 2),
             "revenus_actuels": round(rev_actuel_r, 2),
@@ -2418,20 +2385,6 @@ def compute_all(inputs: FinanceInputs, use_aph_select: bool = True) -> FinanceRe
             "depenses_detail": dep_r_detail,
             "depenses_optimisation_supp": round(supp_r, 2),
             "depenses_optimisees": round(dep_r_opt, 2),
-            "rno_actuel": round(rno_actuel_r, 2),
-            "rno_optimise": round(rno_opt_r, 2),
-            "dscr_actuel": round(rno_actuel_r / hyp_r, 3) if hyp_r > 0 else None,
-            "dscr_optimise": round(rno_opt_r / hyp_r, 3) if hyp_r > 0 else None,
-            "loyer_moyen_actuel": round(rev_actuel_r / 12.0 / nb_r, 2),
-            "loyer_moyen_optimise": round(rev_opt_r / 12.0 / nb_r, 2),
-            "cashflow_porte_mois_actuel": round(cf_actuel_r / nb_r / 12.0, 2),
-            "cashflow_porte_mois_optimise": round(cf_opt_r / nb_r / 12.0, 2),
-            "capital_rembourse_an1": round(capital_an1_r, 2),
-            "rendement_total_an1_optimise": (
-                round((cf_opt_r + capital_an1_r) / total_cash_r, 4)
-                if total_cash_r > 0
-                else None
-            ),
             "cashflow_actuel": round(cf_actuel_r, 2),
             "cashflow_optimise": round(cf_opt_r, 2),
             "rendement_cash_actuel": (
