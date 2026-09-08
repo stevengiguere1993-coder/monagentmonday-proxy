@@ -671,13 +671,27 @@ def _residentiel_section(rl, r: dict, *, s):
          f"{_money(r.get('pret_retenu'))} ({float(r.get('ltv') or 0) * 100:.0f} % du prix) · "
          f"{float(r.get('taux_interet') or 0) * 100:.2f} % · {r.get('amort_annees')} ans"),
         ("Hypothèque",
-         f"{_money(r.get('paiement_mensuel'))}/mois · {_money(r.get('hypotheque_annuelle'))}/an"),
+         f"{_money(r.get('paiement_mensuel'))}/mois · {_money(r.get('hypotheque_annuelle'))}/an"
+         + (f" · prime d'assurance prêt {_money(r.get('prime_assurance'))} "
+            f"(ratio > 80 %, prêt total {_money(r.get('pret_total'))})"
+            if float(r.get('prime_assurance') or 0) > 0 else "")),
+        ("Loyer moyen par porte (actuel → optimisé)",
+         f"{_money(r.get('loyer_moyen_actuel'))} → {_money(r.get('loyer_moyen_optimise'))} /mois"),
         ("Revenus (actuels → optimisés)",
          f"{_money(r.get('revenus_actuels'))} → {_money(r.get('revenus_optimises'))}"),
         ("Dépenses réelles (actuelles → optimisées)",
          f"{_money(r.get('depenses_reelles'))} → {_money(r.get('depenses_optimisees'))}"),
+        ("RNO = revenus − dépenses (actuel → optimisé)",
+         f"{_money(r.get('rno_actuel'))} → {_money(r.get('rno_optimise'))}"),
+        ("Couverture de la dette (RNO ÷ hypothèque)",
+         (f"{float(r.get('dscr_actuel') or 0):.2f} → {float(r.get('dscr_optimise') or 0):.2f}"
+          if r.get('dscr_actuel') is not None else "—")),
         ("Cashflow / an (actuel → optimisé)",
          f"{_money(r.get('cashflow_actuel'))} → {_money(r.get('cashflow_optimise'))}"),
+        ("Cashflow par porte / mois (actuel → optimisé)",
+         f"{_money(r.get('cashflow_porte_mois_actuel'))} → {_money(r.get('cashflow_porte_mois_optimise'))}"),
+        ("Capital remboursé la 1re année (par les loyers)",
+         _money(r.get('capital_rembourse_an1'))),
         ("Cash à sortir (MDF nette + frais)", _money(r.get("mdf_cash"))),
         ("Total dépensé (coût réel + frais)", _money(r.get("total_depense"))),
         (
@@ -691,6 +705,10 @@ def _residentiel_section(rl, r: dict, *, s):
     if rc is not None:
         rows.append(("Rendement sur le cash (cashflow optimisé ÷ cash)",
                      f"{float(rc) * 100:.1f} %"))
+    rt = r.get("rendement_total_an1_optimise")
+    if rt is not None:
+        rows.append(("Rendement total an 1 (cashflow + capital) ÷ cash",
+                     f"{float(rt) * 100:.1f} %"))
     if float(r.get("cashback") or 0) > 0:
         rows.append(("Cashback reçu au notaire",
                      f"{_money(r.get('cashback'))} · coût réel {_money(r.get('prix_reel'))}"))
@@ -726,10 +744,14 @@ def _residentiel_section(rl, r: dict, *, s):
         header = ["Année"] + [str(p["annee"]) for p in proj]
         lignes = [
             ("Revenus", "revenus"), ("Dépenses", "depenses"),
+            ("RNO", "rno"),
             ("Hypothèque", "hypotheque"), ("Cashflow", "cashflow"),
+            ("Cashflow / porte / mois", "cashflow_porte_mois"),
             ("Cashflow cumulé", "cashflow_cumule"),
+            ("Capital remboursé (année)", "capital_annuel"),
+            ("Cashflow + capital", "cashflow_plus_capital"),
             ("Solde prêt", "solde_pret"),
-            ("Capital remboursé", "capital_rembourse"),
+            ("Capital remboursé (cumul)", "capital_rembourse"),
         ]
         data_rows = [header] + [
             [lab] + [_money(p.get(key)) for p in proj] for lab, key in lignes
@@ -1256,9 +1278,9 @@ def _derive_tri_auto_inputs(results: dict) -> dict:
     if isinstance(res, dict) and res.get("pret_retenu") is not None:
         # Résidentiel : dette = prêt + BV, MDF = cash à sortir, loyers /
         # dépenses optimisés, pas de valeur économique → prix.
-        dette = float(res.get("pret_retenu") or 0) + float(
-            res.get("balance_vente") or 0
-        )
+        dette = float(
+            res.get("pret_total") or res.get("pret_retenu") or 0
+        ) + float(res.get("balance_vente") or 0)
         total = float(res.get("frais_demarrage_total") or 0)
         cash = res.get("frais_demarrage_cash")
         return {

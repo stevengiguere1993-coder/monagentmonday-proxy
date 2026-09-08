@@ -3457,9 +3457,9 @@ def _derive_tri_auto_inputs(results: dict) -> dict:
     if isinstance(res, dict) and res.get("pret_retenu") is not None:
         # Résidentiel : dette = prêt + BV, MDF = cash à sortir, loyers /
         # dépenses optimisés, pas de valeur économique → prix.
-        dette = float(res.get("pret_retenu") or 0) + float(
-            res.get("balance_vente") or 0
-        )
+        dette = float(
+            res.get("pret_total") or res.get("pret_retenu") or 0
+        ) + float(res.get("balance_vente") or 0)
         total = float(res.get("frais_demarrage_total") or 0)
         cash = res.get("frais_demarrage_cash")
         return {
