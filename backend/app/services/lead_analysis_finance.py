@@ -1012,6 +1012,17 @@ class FinanceInputs:
     # crû organiquement depuis l'an 0.
     optimisation_pre_achat: bool = False
 
+    # Sept. 2026 (retour Phil 2026-09-08) — 3e façon d'acheter :
+    # RÉSIDENTIEL (≤ 8 unités). Rien de normalisé : prêt = ratio
+    # prêt-valeur × prix (défaut 80 %), dépenses RÉELLES de la fiche +
+    # lignes libres (gazon, déneigement…), cashflow = revenus −
+    # dépenses − hypothèque ; l'optimisation (unités) augmente les
+    # revenus et, si saisi, les dépenses.
+    ltv_residentiel: float = 0.80
+    amort_residentiel_annees: int = 25
+    depenses_residentiel: List[dict] = field(default_factory=list)
+    depenses_optimisation_supp: float = 0.0
+
     # True quand la fiche a explicitement choisi une stratégie
     # (chantier staging) : active l'indexation organique des loyers
     # non optimisés et des dépenses réelles au refi. False = calcul
@@ -1160,6 +1171,8 @@ class FinanceResults:
     # Projection long terme du mode prêteur B (après refi) — None hors
     # chantier.
     projection_preteur_b: Optional[list] = None
+    #: Sept. 2026 — mode RÉSIDENTIEL (None sinon).
+    residentiel: Optional[dict] = None
 
     def to_dict(self) -> dict:
         """Pour persistance JSON dans `LeadAnalysis.analysis_results_json`."""
@@ -1209,6 +1222,7 @@ class FinanceResults:
                 "prix_reel": self.prix_reel,
             },
             "traditionnel": self.traditionnel,
+            "residentiel": self.residentiel,
             "projection_preteur_b": self.projection_preteur_b,
             # Phase 3 — résumé de l'optimisation par unité (None si la
             # fiche n'a pas détaillé ses unités).
@@ -2190,6 +2204,221 @@ def compute_all(inputs: FinanceInputs, use_aph_select: bool = True) -> FinanceRe
             },
         }
 
+    # ── RÉSIDENTIEL (retour Phil 2026-09-08) : 3e façon d'acheter ──
+    # « Rien de compliqué » : prêt = ratio prêt-valeur × prix, dépenses
+    # RÉELLES (celles de la fiche + lignes libres), hypothèque au taux
+    # d'achat, cashflow = revenus − dépenses − hypothèque. L'optimisation
+    # (unités) augmente les revenus et, si saisi, les dépenses. Jusqu'à
+    # 8 unités (alerte au-delà). Mise de fonds comme en traditionnel.
+    residentiel: Optional[dict] = None
+    if inputs.strategie == "residentiel":
+        ltv_r = max(0.0, min(1.0, float(inputs.ltv_residentiel or 0.80)))
+        amort_r = max(1, int(inputs.amort_residentiel_annees or 25))
+        taux_r = float(inputs.taux_interet_achat or 0.0)
+        pret_r = ltv_r * inputs.prix_achat
+        paiement_r = pmt_canadian(taux_r, amort_r * 12, pret_r)
+        hyp_r = paiement_r * 12.0
+        h_r = max(1, int(inputs.projection_horizon_annees or 5))
+        cl_r = float(inputs.croissance_loyers or 0.0)
+        cd_r = float(inputs.croissance_depenses or 0.0)
+        # Balance de vente plafonnée à la mise de fonds restante.
+        bv_r = max(0.0, float(inputs.balance_vente_montant or 0.0))
+        bv_r = min(bv_r, max(0.0, inputs.prix_achat - pret_r - _cashback))
+        bv_int_r = bv_r * float(inputs.balance_vente_taux_pct or 0.0)
+
+        # Dépenses RÉELLES : la fiche + lignes libres (gazon, déneigement…).
+        lignes_r: list = []
+        for it in inputs.depenses_residentiel or []:
+            if not isinstance(it, dict):
+                continue
+            try:
+                m = float(it.get("montant") or 0)
+            except (TypeError, ValueError):
+                continue
+            lignes_r.append(
+                {"label": str(it.get("label") or "Autre"), "montant": round(m, 2)}
+            )
+        dep_r_detail = {
+            "taxes_municipales": round(float(inputs.taxes_municipales or 0), 2),
+            "taxes_scolaires": round(float(inputs.taxes_scolaires or 0), 2),
+            "assurances": round(float(inputs.assurances or 0), 2),
+            "energie": round(float(inputs.energie or 0), 2),
+            "autres": round(float(inputs.depenses_autres or 0), 2),
+            "lignes": lignes_r,
+        }
+        dep_r = (
+            dep_r_detail["taxes_municipales"]
+            + dep_r_detail["taxes_scolaires"]
+            + dep_r_detail["assurances"]
+            + dep_r_detail["energie"]
+            + dep_r_detail["autres"]
+            + sum(l["montant"] for l in lignes_r)
+        )
+        supp_r = max(0.0, float(inputs.depenses_optimisation_supp or 0.0))
+        dep_r_opt = dep_r + supp_r
+
+        rev_actuel_r = inputs.revenus_annuels
+        if unites_valides:
+            rev_opt_r = sum(
+                float(u.get("loyer_cible") or 0)
+                if u.get("optimiser", True)
+                else float(u.get("loyer_actuel") or 0)
+                for u in unites_valides
+            ) * 12.0
+        else:
+            rev_opt_r = rev_actuel_r
+        rev_achat_r = rev_opt_r if _pre_achat else rev_actuel_r
+        cf_actuel_r = rev_actuel_r - dep_r - hyp_r
+        cf_opt_r = rev_opt_r - dep_r_opt - hyp_r
+
+        # Frais d'acquisition : même logique que le traditionnel
+        # (courtier 1 sur le prêt, dossier fixe, intérêts BV provisionnés,
+        # détention), sans rapport d'efficacité ni postes prêteur B.
+        _ov_r = inputs.frais_demarrage_overrides or {}
+        _pc_r = dict(PCT_COURTIERS)
+        for _k, _v in (inputs.pct_courtiers_overrides or {}).items():
+            if _v is not None:
+                _pc_r[_k] = float(_v)
+        _ffo_r = inputs.frais_fixes_overrides or {}
+        _fd_r = (
+            float(_ffo_r["frais_dossier_trad"])
+            if _ffo_r.get("frais_dossier_trad") is not None
+            else float(inputs.frais_dossier_trad)
+        )
+        f_r = {
+            k: float(v or 0)
+            for k, v in frais.__dict__.items()
+            if k != "frais_custom"
+        }
+        for _k in (
+            "courtier_hypothecaire_2", "evaluateur_2", "notaire_2",
+            "interets", "revenus_nets_pendant_projet", "rapport_efficacite",
+        ):
+            f_r[_k] = 0.0
+        if _ov_r.get("courtier_hypothecaire_1") is None:
+            f_r["courtier_hypothecaire_1"] = (
+                _pc_r["courtier_hypothecaire_1"] * pret_r
+            )
+        if _ov_r.get("frais_dossier_preteur") is None:
+            f_r["frais_dossier_preteur"] = _fd_r
+        if _ov_r.get("interets_balance_vente") is None:
+            f_r["interets_balance_vente"] = bv_int_r * h_r
+        for _mk in masques:
+            if _mk in f_r:
+                f_r[_mk] = 0.0
+        _fin_r = set(inputs.frais_demarrage_financables or [])
+        _custom_total_r = sum(
+            float(c.get("montant", 0) or 0) for c in frais.frais_custom
+        )
+        _custom_cash_r = sum(
+            float(c.get("montant", 0) or 0)
+            for c in frais.frais_custom
+            if str(c.get("id", "")) not in _fin_r
+        )
+        frais_r_total = round(sum(f_r.values()) + _custom_total_r, 2)
+        frais_r_cash = round(
+            sum(v for k, v in f_r.items() if k not in _fin_r) + _custom_cash_r, 2
+        )
+        mdf_brute_r = inputs.prix_achat - pret_r
+        mdf_nette_r = mdf_brute_r - _cashback - bv_r
+        total_cash_r = mdf_nette_r + frais_r_cash
+        total_depense_r = prix_reel + frais_r_total
+
+        def _rev_r(a: int) -> float:
+            if a <= 0:
+                return rev_achat_r
+            if not unites_valides:
+                return rev_actuel_r * (1 + cl_r) ** a
+            total_mois = 0.0
+            for u in unites_valides:
+                if u.get("optimiser", False):
+                    total_mois += (
+                        float(u.get("loyer_cible") or 0)
+                        * (1 + cl_r) ** (a if _pre_achat else max(0, a - 1))
+                    )
+                else:
+                    total_mois += (
+                        float(u.get("loyer_actuel") or 0) * (1 + cl_r) ** a
+                    )
+            return total_mois * 12.0
+
+        proj_r: list = []
+        cum_cf = 0.0
+        for a in range(0, max(h_r, 12) + 1):
+            rev_a = _rev_r(a)
+            dep_base = dep_r_opt if (a >= 1 or _pre_achat) else dep_r
+            dep_a = dep_base * (1 + cd_r) ** a
+            cf_a = rev_a - dep_a - hyp_r
+            cum_cf += cf_a
+            solde_a = solde_pret_canadien(pret_r, taux_r, amort_r, a)
+            proj_r.append({
+                "annee": a,
+                "revenus": round(rev_a, 2),
+                "depenses": round(dep_a, 2),
+                "hypotheque": round(hyp_r, 2),
+                "cashflow": round(cf_a, 2),
+                "cashflow_cumule": round(cum_cf, 2),
+                "solde_pret": round(solde_a, 2),
+                "capital_rembourse": round(pret_r - solde_a, 2),
+                "rendement_cash": (
+                    round(cf_a / total_cash_r, 4) if total_cash_r > 0 else None
+                ),
+            })
+
+        residentiel = {
+            "labels": {
+                "residentiel": f"Résidentiel (prêt {ltv_r * 100:.0f} %)"
+            },
+            "programme_retenu": "residentiel",
+            "nb_logements": inputs.nombre_logements,
+            "alerte_8_unites": int(inputs.nombre_logements or 0) > 8,
+            "ltv": ltv_r,
+            "amort_annees": amort_r,
+            "taux_interet": taux_r,
+            "pret_retenu": round(pret_r, 2),
+            "paiement_mensuel": round(paiement_r, 2),
+            "hypotheque_annuelle": round(hyp_r, 2),
+            "revenus_actuels": round(rev_actuel_r, 2),
+            "revenus_optimises": round(rev_opt_r, 2),
+            "revenus_achat": round(rev_achat_r, 2),
+            "depenses_reelles": round(dep_r, 2),
+            "depenses_detail": dep_r_detail,
+            "depenses_optimisation_supp": round(supp_r, 2),
+            "depenses_optimisees": round(dep_r_opt, 2),
+            "cashflow_actuel": round(cf_actuel_r, 2),
+            "cashflow_optimise": round(cf_opt_r, 2),
+            "rendement_cash_actuel": (
+                round(cf_actuel_r / total_cash_r, 4) if total_cash_r > 0 else None
+            ),
+            "rendement_cash_optimise": (
+                round(cf_opt_r / total_cash_r, 4) if total_cash_r > 0 else None
+            ),
+            "frais_demarrage": {k: round(v, 2) for k, v in f_r.items()},
+            "frais_demarrage_total": frais_r_total,
+            "frais_demarrage_cash": frais_r_cash,
+            "frais_dossier_trad": round(_fd_r, 2),
+            "detail_mdf": {
+                "mdf_brute": round(mdf_brute_r, 2),
+                "cashback": round(_cashback, 2),
+                "balance_vente": round(bv_r, 2),
+                "mdf_nette": round(mdf_nette_r, 2),
+                "frais_cash": frais_r_cash,
+                "total_cash": round(total_cash_r, 2),
+            },
+            "mdf_cash": round(total_cash_r, 2),
+            "total_depense": round(total_depense_r, 2),
+            "cashback": round(_cashback, 2),
+            "prix_achat": round(inputs.prix_achat, 2),
+            "prix_reel": round(prix_reel, 2),
+            "balance_vente": round(bv_r, 2),
+            "interets_bv_annuels": round(bv_int_r, 2),
+            "horizon": h_r,
+            "croissance_loyers": cl_r,
+            "croissance_depenses": cd_r,
+            "optimisation_pre_achat": _pre_achat,
+            "projection": proj_r,
+        }
+
     # ── Projection long terme du mode PRÊTEUR B (2026-09-02) : après
     # le refi (an = durée du projet), le scénario gagnant continue de
     # croître — même graphique que le mode traditionnel.
@@ -2262,4 +2491,5 @@ def compute_all(inputs: FinanceInputs, use_aph_select: bool = True) -> FinanceRe
         prix_reel=prix_reel,
         traditionnel=traditionnel,
         projection_preteur_b=projection_preteur_b,
+        residentiel=residentiel,
     )
