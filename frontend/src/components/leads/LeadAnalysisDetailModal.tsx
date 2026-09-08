@@ -1424,6 +1424,12 @@ export function LeadAnalysisDetailModal({
 type TriInputs = {
   /** Année du refinancement : horizons n, n+5, n+10. */
   annee_refi?: number;
+  /** Amortissement des prêts (taux en fraction, années). */
+  taux_achat?: number;
+  amort_achat?: number;
+  amortissement_initial?: boolean;
+  taux_refi?: number;
+  amort_refi?: number;
   prix: number;
   rpv_achat: number;
   pret_constr: number;
@@ -1453,6 +1459,9 @@ type TriHorizon = {
   valeur_immeuble: number;
   pret_max_refi: number;
   argent_dispo: number;
+  /** Solde du prêt précédent remboursé à ce refi (amorti). */
+  solde_avant_refi?: number;
+  capital_rembourse?: number;
   equite: number;
   retour_capital: number;
   surplus: number;
@@ -1465,6 +1474,8 @@ type TriResult = {
   intrants: TriInputs;
   bases: {
     hypotheque: number;
+    solde_hypotheque_an_refi?: number;
+    amortissement_initial?: boolean;
     marge: number;
     rno2: number;
     multiplicateur: number;
@@ -1512,7 +1523,11 @@ const TRI_AUTO_FIELDS: Array<{
   { key: "loyers2", label: "Loyers bruts stabilisés (année du refi)", format: "money" },
   { key: "dep2", label: "Dépenses d'opération (année du refi)", format: "money" },
   { key: "valeur2", label: "Valeur de l'immeuble stabilisée (année du refi)", format: "money" },
-  { key: "rpv_refi", label: "Ratio prêt-valeur au refinancement", format: "percent" }
+  { key: "rpv_refi", label: "Ratio prêt-valeur au refinancement", format: "percent" },
+  { key: "taux_achat", label: "Taux du prêt d'achat", format: "percent" },
+  { key: "amort_achat", label: "Amortissement du prêt d'achat (années)", format: "number" },
+  { key: "taux_refi", label: "Taux du prêt de refi", format: "percent" },
+  { key: "amort_refi", label: "Amortissement du prêt de refi (années)", format: "number" }
 ];
 
 /** % affiché à 1 décimale (les intrants ratio sont stockés en fraction). */
@@ -1572,6 +1587,9 @@ function LeadTriTab({ analysisId }: { analysisId: number }) {
 
   function setField(key: keyof TriInputs, value: number | null) {
     setInputs((prev) => (prev ? { ...prev, [key]: value ?? 0 } : prev));
+  }
+  function setFlag(key: keyof TriInputs, value: boolean) {
+    setInputs((prev) => (prev ? { ...prev, [key]: value } : prev));
   }
 
   async function compute() {
@@ -1695,6 +1713,21 @@ function LeadTriTab({ analysisId }: { analysisId: number }) {
                   />
                 );
               })}
+              <label className="flex items-start gap-2 text-[11px] text-white/70 sm:col-span-2 lg:col-span-4">
+                <input
+                  type="checkbox"
+                  checked={!!inputs.amortissement_initial}
+                  onChange={(e) => setFlag("amortissement_initial", e.target.checked)}
+                  className="mt-0.5 h-3.5 w-3.5 accent-emerald-500"
+                />
+                <span>
+                  Le prêt d&apos;achat s&apos;amortit (capital + intérêts —
+                  institution / résidentiel). Décoché = intérêts seulement
+                  (prêteur B). Les prêts de refi s&apos;amortissent toujours
+                  entre deux horizons : le capital remboursé par
+                  l&apos;immeuble n&apos;est plus compté comme à rembourser.
+                </span>
+              </label>
             </div>
           ) : null}
         </div>
@@ -1882,6 +1915,14 @@ function TriDetailTable({ result }: { result: TriResult }) {
     { label: "RNO (revenu net d'opération)", pick: (h) => fmtMoney(h.rno) },
     { label: "Valeur de l'immeuble", pick: (h) => fmtMoney(h.valeur_immeuble) },
     { label: "Prêt max au refinancement", pick: (h) => fmtMoney(h.pret_max_refi) },
+    {
+      label: "Solde du prêt précédent à rembourser (amorti)",
+      pick: (h) => fmtMoney(h.solde_avant_refi ?? null)
+    },
+    {
+      label: "Capital déjà remboursé par l'immeuble",
+      pick: (h) => fmtMoney(h.capital_rembourse ?? null)
+    },
     { label: "Argent disponible au refi", pick: (h) => fmtMoney(h.argent_dispo) },
     { label: "Équité", pick: (h) => fmtMoney(h.equite) },
     { label: "Retour de capital", pick: (h) => fmtMoney(h.retour_capital) },
@@ -1940,6 +1981,17 @@ function TriDetailTable({ result }: { result: TriResult }) {
             <td className="px-2 py-1 text-white/60">Hypothèque d&apos;achat</td>
             <td className="px-2 py-1 text-right font-mono tabular-nums text-white/90">
               {fmtMoney(result.bases.hypotheque)}
+            </td>
+          </tr>
+          <tr className="border-t border-brand-800/60">
+            <td className="px-2 py-1 text-white/60">
+              Solde de l&apos;hypothèque d&apos;achat à l&apos;année du refi
+              {result.bases.amortissement_initial
+                ? " (amortie)"
+                : " (intérêts seulement)"}
+            </td>
+            <td className="px-2 py-1 text-right font-mono tabular-nums text-white/90">
+              {fmtMoney(result.bases.solde_hypotheque_an_refi ?? result.bases.hypotheque)}
             </td>
           </tr>
           <tr className="border-t border-brand-800/60">

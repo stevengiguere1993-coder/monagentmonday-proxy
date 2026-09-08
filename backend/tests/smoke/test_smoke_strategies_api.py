@@ -158,11 +158,18 @@ def test_parcours_traditionnel_cashback_et_tri(client, auth_headers, run):
     ) < 1e-9
     ref = t3["refi"][t3["best_refi"]["key"]]
     assert abs(inp["valeur2"] - ref["valeur_retenue"]) < 0.01
+    # Amortissement repris de l'analyse (institution = prêt amorti).
+    assert inp["amortissement_initial"] is True
+    assert abs(inp["taux_refi"] - 0.04) < 1e-9
+    assert inp["amort_refi"] == ref["amort_annees"]
     inp["capital"] = 500_000
     r = client.post(f"{base}/tri", headers=auth_headers, json=inp)
     assert r.status_code == 200, r.text
     tri = r.json()
     assert tri["horizons_list"] == [5, 10, 15]
+    assert tri["bases"]["amortissement_initial"] is True
+    assert tri["bases"]["solde_hypotheque_an_refi"] < tri["bases"]["hypotheque"]
+    assert tri["horizons"]["10"]["capital_rembourse"] > 0
     assert set(tri["tri"].keys()) == {"an5", "an10", "an15"}
     assert len(tri["flux"]["15"]) == 16
 
@@ -190,6 +197,8 @@ def test_parcours_traditionnel_cashback_et_tri(client, auth_headers, run):
     r = client.get(f"{base}/tri-inputs", headers=auth_headers)
     inp_b = r.json()["inputs"]
     assert inp_b["annee_refi"] == 3
+    assert inp_b["amortissement_initial"] is False  # prêteur B : intérêts seulement
+    assert inp_b["amort_refi"] > 0
     # En prêteur B la BV est plafonnée à l'assise restante après cashback
     # (250 k − 20 k ≥ 20 k → 20 k) : dette initiale = prêt B + BV.
     bv_b = res_b2["balance_vente"]["montant"]
