@@ -3404,6 +3404,13 @@ class TriInputs(BaseModel):
     # Année du refinancement (retour Phil 2026-09-04) : horizons =
     # n, n+5, n+10. Repris de l'analyse, modifiable.
     annee_refi: int = 2
+    # Amortissement des prêts (retour Phil 2026-09-08) : taux en
+    # FRACTION, amortissement en années ; 0 = pas d'amortissement.
+    taux_achat: float = 0.0
+    amort_achat: int = 0
+    amortissement_initial: bool = False
+    taux_refi: float = 0.0
+    amort_refi: int = 0
 
 
 class TriInputsResponse(BaseModel):
@@ -3553,6 +3560,51 @@ def _derive_tri_auto_inputs(results: dict) -> dict:
         "rpv_refi": float(best.get("ltv") or 0),
     }
 
+def _amortissement_tri(results: dict, rec=None) -> dict:
+    """Taux / amortissements repris de l'analyse pour que le TRI amortisse
+    les prêts (retour Phil 2026-09-08). Taux en FRACTION. Le prêt d'achat
+    n'est amorti qu'en institution traditionnelle / résidentiel (prêteur B
+    = intérêts seulement)."""
+    def _pct(attr):
+        v = getattr(rec, attr, None) if rec is not None else None
+        return float(v) / 100.0 if v is not None else None
+
+    taux_achat = results.get("taux_interet_achat")
+    taux_refi = results.get("taux_interet_refi")
+    if taux_achat is None:
+        taux_achat = _pct("taux_interet_achat_pct")
+    if taux_refi is None:
+        taux_refi = _pct("taux_interet_refi_pct")
+    res = results.get("residentiel")
+    trad = results.get("traditionnel")
+    if isinstance(res, dict) and res.get("pret_retenu") is not None:
+        t = float(res.get("taux_interet") or (taux_achat or 0))
+        a = int(res.get("amort_annees") or 25)
+        return {
+            "taux_achat": t, "amort_achat": a, "amortissement_initial": True,
+            "taux_refi": t, "amort_refi": a,
+        }
+    if isinstance(trad, dict) and isinstance(trad.get("refi"), dict):
+        achat = (trad.get("achat") or {}).get(trad.get("programme_retenu") or "") or {}
+        best = (trad.get("refi") or {}).get((trad.get("best_refi") or {}).get("key")) or {}
+        return {
+            "taux_achat": float(taux_achat or 0),
+            "amort_achat": int(achat.get("amort_annees") or 25),
+            "amortissement_initial": True,
+            "taux_refi": float(taux_refi or 0),
+            "amort_refi": int(best.get("amort_annees") or 25),
+        }
+    best_b = _best_refi_scenario(results) or {}
+    achat_b = (results.get("scenarios") or {}).get("achat") or {}
+    return {
+        "taux_achat": float(taux_achat or 0),
+        "amort_achat": int(achat_b.get("amort_annees") or 25),
+        # Prêteur B : intérêts seulement pendant le projet.
+        "amortissement_initial": False,
+        "taux_refi": float(taux_refi or 0),
+        "amort_refi": int(best_b.get("amort_annees") or 25),
+    }
+
 
 def _annee_refi_de(rec) -> int:
     """Année du refinancement de la fiche (retour Phil 2026-09-04) :
@@ -3664,10 +3716,12 @@ async def get_tri_inputs(
         "loyers2": 0.0, "dep2": 0.0, "valeur2": 0.0, "rpv_refi": 0.0,
     }
     analysis_ready = False
+    amort: dict = {}
     if rec.analysis_results_json:
         try:
             results = json.loads(rec.analysis_results_json) or {}
             auto = _derive_tri_auto_inputs(results)
+            amort = _amortissement_tri(results, rec)
             analysis_ready = True
         except Exception:  # noqa: BLE001
             analysis_ready = False
@@ -3683,6 +3737,7 @@ async def get_tri_inputs(
         cr_loyers=manual["cr_loyers"],
         cr_dep=manual["cr_dep"],
         annee_refi=_annee_refi_de(rec),
+        **amort,
     )
     return TriInputsResponse(
         inputs=inputs,
@@ -3690,6 +3745,8 @@ async def get_tri_inputs(
         auto_fields=[
             "prix", "rpv_achat", "pret_constr", "mdf",
             "loyers2", "dep2", "valeur2", "rpv_refi", "annee_refi",
+            "taux_achat", "amort_achat", "amortissement_initial",
+            "taux_refi", "amort_refi",
         ],
         manual_fields=["capital", "pct", "cr_loyers", "cr_dep"],
     )
@@ -3729,6 +3786,11 @@ async def compute_tri_endpoint(
         cr_loyers=payload.cr_loyers,
         cr_dep=payload.cr_dep,
         annee_refi=payload.annee_refi,
+        taux_achat=payload.taux_achat or None,
+        amort_achat=payload.amort_achat or None,
+        amortissement_initial=payload.amortissement_initial,
+        taux_refi=payload.taux_refi or None,
+        amort_refi=payload.amort_refi or None,
     )
 
     # Persiste les 4 intrants MANUELS sur la fiche (les 8 auto sont
