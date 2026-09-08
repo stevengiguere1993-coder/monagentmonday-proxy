@@ -2635,6 +2635,32 @@ function UnitesOptimisationCard({
               </button>
               <button
                 type="button"
+                onClick={() => {
+                  setRows((rs) =>
+                    rs ? rs.map((r) => ({ ...r, optimiser: true })) : rs
+                  );
+                  setDirty(true);
+                }}
+                className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-300 transition hover:bg-emerald-500/20"
+                title="Optimiser toutes les unités"
+              >
+                Tout cocher
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setRows((rs) =>
+                    rs ? rs.map((r) => ({ ...r, optimiser: false })) : rs
+                  );
+                  setDirty(true);
+                }}
+                className="rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-xs font-semibold text-white/60 transition hover:bg-white/10"
+                title="Aucune unité optimisée"
+              >
+                Tout décocher
+              </button>
+              <button
+                type="button"
                 onClick={generer}
                 className="rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-xs font-semibold text-white/60 transition hover:bg-white/10"
               >
@@ -2918,8 +2944,8 @@ function ManualAnalysisSection({
                   APH) + détention + refi
                 </option>
                 <option value="residentiel">
-                  Résidentiel (≤ 8 unités) — prêt 80 %, dépenses réelles,
-                  cashflow
+                  Résidentiel (≤ 8 unités) — ratio prêt-valeur au choix,
+                  dépenses réelles, cashflow
                 </option>
               </select>
               <p className="text-[10px] text-white/40">
@@ -2958,29 +2984,34 @@ function ManualAnalysisSection({
 
         {/* Financement & taux */}
         <SubCard icon={Percent} title="Financement & taux" cols={3}>
-          <FieldNumber
-            label="TGA (%)"
-            value={data.tga_pct ?? 4}
-            onSave={(v) => onPatch("tga_pct", v ?? 4)}
-            format="percent"
-          />
+          {/* Résidentiel : pas de valeur économique, donc pas de TGA. */}
+          {!modeRes ? (
+            <FieldNumber
+              label="TGA (%)"
+              value={data.tga_pct ?? 4}
+              onSave={(v) => onPatch("tga_pct", v ?? 4)}
+              format="percent"
+            />
+          ) : null}
           {/* En stratégie prêteur B, le taux d'achat conventionnel ne
               sert à rien (retour Phil 2026-08-31) — masqué sur le
               chantier, conservé ailleurs. */}
           {!modePreteurB ? (
             <FieldNumber
-              label="Taux intérêt achat (%)"
+              label={modeRes ? "Taux hypothécaire (%)" : "Taux intérêt achat (%)"}
               value={data.taux_interet_achat_pct ?? 4}
               onSave={(v) => onPatch("taux_interet_achat_pct", v ?? 4)}
               format="percent"
             />
           ) : null}
-          <FieldNumber
-            label="Taux d'intérêt refi (%)"
-            value={data.taux_interet_refi_pct}
-            onSave={(v) => onPatch("taux_interet_refi_pct", v)}
-            format="percent"
-          />
+          {!modeRes ? (
+            <FieldNumber
+              label="Taux d'intérêt refi (%)"
+              value={data.taux_interet_refi_pct}
+              onSave={(v) => onPatch("taux_interet_refi_pct", v)}
+              format="percent"
+            />
+          ) : null}
           {!modeDirect ? (
             <FieldNumber
               label="MDF prêteur B (%)"
@@ -3442,10 +3473,14 @@ type ResProjPoint = {
   annee: number;
   revenus: number;
   depenses: number;
+  rno?: number;
   hypotheque: number;
   cashflow: number;
   cashflow_cumule: number;
+  cashflow_porte_mois?: number;
   solde_pret: number;
+  capital_annuel?: number;
+  cashflow_plus_capital?: number;
   capital_rembourse: number;
   rendement_cash: number | null;
 };
@@ -3459,6 +3494,9 @@ type ResidentielResult = {
   amort_annees: number;
   taux_interet: number;
   pret_retenu: number;
+  taux_prime?: number;
+  prime_assurance?: number;
+  pret_total?: number;
   paiement_mensuel: number;
   hypotheque_annuelle: number;
   revenus_actuels: number;
@@ -3475,6 +3513,16 @@ type ResidentielResult = {
   };
   depenses_optimisation_supp: number;
   depenses_optimisees: number;
+  rno_actuel?: number;
+  rno_optimise?: number;
+  dscr_actuel?: number | null;
+  dscr_optimise?: number | null;
+  loyer_moyen_actuel?: number;
+  loyer_moyen_optimise?: number;
+  cashflow_porte_mois_actuel?: number;
+  cashflow_porte_mois_optimise?: number;
+  capital_rembourse_an1?: number;
+  rendement_total_an1_optimise?: number | null;
   cashflow_actuel: number;
   cashflow_optimise: number;
   rendement_cash_actuel: number | null;
@@ -4212,13 +4260,21 @@ function ResidentielAchatPanel({
     ["Autres dépenses", d.autres],
     ...d.lignes.map((l) => [l.label, l.montant] as [string, number])
   ];
+  const ratio = (v: number | null | undefined) =>
+    v != null ? `${v.toFixed(2)} ×` : "—";
   const cmp: Array<{
     label: string;
     a: number;
     o: number;
     bold?: boolean;
     color?: boolean;
+    fmt?: (v: number) => string;
   }> = [
+    {
+      label: "Loyer moyen par porte ($/mois)",
+      a: r.loyer_moyen_actuel ?? r.revenus_actuels / 12 / Math.max(1, r.nb_logements),
+      o: r.loyer_moyen_optimise ?? r.revenus_optimises / 12 / Math.max(1, r.nb_logements)
+    },
     { label: "Revenus ($/an)", a: r.revenus_actuels, o: r.revenus_optimises },
     {
       label: "Dépenses réelles ($/an)",
@@ -4226,15 +4282,32 @@ function ResidentielAchatPanel({
       o: r.depenses_optimisees
     },
     {
+      label: "RNO = revenus − dépenses",
+      a: r.rno_actuel ?? r.revenus_actuels - r.depenses_reelles,
+      o: r.rno_optimise ?? r.revenus_optimises - r.depenses_optimisees
+    },
+    {
       label: "Hypothèque ($/an)",
       a: r.hypotheque_annuelle,
       o: r.hypotheque_annuelle
+    },
+    {
+      label: "Couverture de la dette (RNO ÷ hypothèque)",
+      a: r.dscr_actuel ?? 0,
+      o: r.dscr_optimise ?? 0,
+      fmt: ratio
     },
     {
       label: "Cashflow ($/an)",
       a: r.cashflow_actuel,
       o: r.cashflow_optimise,
       bold: true,
+      color: true
+    },
+    {
+      label: "Cashflow par porte ($/mois)",
+      a: r.cashflow_porte_mois_actuel ?? r.cashflow_actuel / Math.max(1, r.nb_logements) / 12,
+      o: r.cashflow_porte_mois_optimise ?? r.cashflow_optimise / Math.max(1, r.nb_logements) / 12,
       color: true
     }
   ];
@@ -4261,7 +4334,11 @@ function ResidentielAchatPanel({
       subtitle={
         <>
           Prêt = {(r.ltv * 100).toFixed(0)} % du prix,{" "}
-          {(r.taux_interet * 100).toFixed(2)} % sur {r.amort_annees} ans.
+          {(r.taux_interet * 100).toFixed(2)} % sur {r.amort_annees} ans
+          {(r.prime_assurance ?? 0) > 0
+            ? " (prime d'assurance prêt financée, ratio > 80 %)"
+            : ""}
+          . Pas de valeur économique ni de TGA ici.
           Dépenses RÉELLES (rien de normalisé) ; cashflow = revenus −
           dépenses − hypothèque.{" "}
           {r.optimisation_pre_achat
@@ -4299,6 +4376,15 @@ function ResidentielAchatPanel({
                 [
                   ["Prix d'achat", r.prix_achat],
                   [`Prêt résidentiel (${(r.ltv * 100).toFixed(0)} %)`, r.pret_retenu],
+                  ...((r.prime_assurance ?? 0) > 0
+                    ? ([
+                        [
+                          `Prime d'assurance prêt (${((r.taux_prime ?? 0) * 100).toFixed(2)} %, ratio > 80 %, financée)`,
+                          r.prime_assurance ?? 0
+                        ],
+                        ["Prêt total (avec prime)", r.pret_total ?? r.pret_retenu]
+                      ] as Array<[string, number]>)
+                    : []),
                   ["Paiement mensuel", r.paiement_mensuel],
                   ["Hypothèque annuelle", r.hypotheque_annuelle]
                 ] as Array<[string, number]>
@@ -4374,7 +4460,7 @@ function ResidentielAchatPanel({
                           : "text-white/90"
                       }`}
                     >
-                      {fmtMoney(v)}
+                      {row.fmt ? row.fmt(v) : fmtMoney(v)}
                     </td>
                   ))}
                 </tr>
@@ -4388,6 +4474,22 @@ function ResidentielAchatPanel({
                 </td>
                 <td className="px-2 py-1 text-right font-mono tabular-nums text-white/90">
                   {pctFmt(r.rendement_cash_optimise)}
+                </td>
+              </tr>
+              <tr className="border-t border-brand-800/60">
+                <td className="px-2 py-1 text-white/60">
+                  Capital remboursé la 1re année (par les loyers)
+                </td>
+                <td className="px-2 py-1 text-right font-mono tabular-nums text-white/90" colSpan={2}>
+                  {fmtMoney(r.capital_rembourse_an1 ?? 0)}
+                </td>
+              </tr>
+              <tr className="border-t border-brand-800/60 font-bold">
+                <td className="px-2 py-1 text-white/80">
+                  Rendement total an 1 (cashflow optimisé + capital) ÷ cash
+                </td>
+                <td className="px-2 py-1 text-right font-mono tabular-nums text-emerald-300" colSpan={2}>
+                  {pctFmt(r.rendement_total_an1_optimise ?? null)}
                 </td>
               </tr>
             </tbody>
@@ -4437,9 +4539,13 @@ function ResidentielProjectionPanel({
   const rows: Array<[string, (p: ResProjPoint) => number, string?]> = [
     ["Revenus", (p) => p.revenus],
     ["Dépenses", (p) => p.depenses],
+    ["RNO (revenus − dépenses)", (p) => p.rno ?? p.revenus - p.depenses],
     ["Hypothèque", (p) => p.hypotheque],
     ["Cashflow", (p) => p.cashflow, "signe"],
+    ["Cashflow par porte / mois", (p) => p.cashflow_porte_mois ?? 0, "signe"],
     ["Cashflow cumulé", (p) => p.cashflow_cumule, "signe"],
+    ["Capital remboursé (année)", (p) => p.capital_annuel ?? 0],
+    ["Cashflow + capital remboursé", (p) => p.cashflow_plus_capital ?? p.cashflow, "signe"],
     ["Solde du prêt", (p) => p.solde_pret],
     ["Capital remboursé (cumul)", (p) => p.capital_rembourse]
   ];
