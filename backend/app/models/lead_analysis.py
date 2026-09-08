@@ -331,34 +331,6 @@ class LeadAnalysis(Base, TimestampUpdateMixin):
     balance_vente_taux_pct: Mapped[Optional[float]] = mapped_column(
         Numeric(5, 3), nullable=True
     )
-    # Cashback reçu au notaire (2026-09-04) : le prix déclaré à
-    # l'institution = prix + cashback → plus gros prêt, moins de
-    # cash. NULL/0 = aucun.
-    cashback_montant: Mapped[Optional[float]] = mapped_column(
-        Numeric(14, 2), nullable=True
-    )
-    # Moment de l'optimisation (2026-09-08) : 'post_achat' (défaut,
-    # NULL) = l'achat se finance sur les revenus de la fiche ;
-    # 'pre_achat' = le financement initial se base déjà sur les
-    # loyers des unités (cible si optimisée).
-    optimisation_moment: Mapped[Optional[str]] = mapped_column(
-        String(16), nullable=True
-    )
-    # Mode RÉSIDENTIEL (2026-09-08) : ratio prêt-valeur (80.0 = 80 %),
-    # amortissement, lignes de dépenses réelles libres
-    # ``[{label, montant}]`` et dépenses ajoutées par l'optimisation.
-    ltv_residentiel_pct: Mapped[Optional[float]] = mapped_column(
-        Numeric(5, 2), nullable=True
-    )
-    amort_residentiel_annees: Mapped[Optional[int]] = mapped_column(
-        Integer, nullable=True
-    )
-    depenses_residentiel_json: Mapped[Optional[str]] = mapped_column(
-        Text, nullable=True
-    )
-    depenses_optimisation_supp: Mapped[Optional[float]] = mapped_column(
-        Numeric(14, 2), nullable=True
-    )
     # Horizon de projection (années) des stratégies de détention —
     # NULL → défaut 5 ans.
     projection_horizon_annees: Mapped[Optional[int]] = mapped_column(
