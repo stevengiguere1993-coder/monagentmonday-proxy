@@ -159,6 +159,10 @@ class LeadAnalysisRead(BaseModel):
     balance_vente_montant: Optional[float] = None
     cashback_montant: Optional[float] = None
     optimisation_moment: Optional[str] = None
+    ltv_residentiel_pct: Optional[float] = None
+    amort_residentiel_annees: Optional[int] = None
+    depenses_residentiel_json: Optional[str] = None
+    depenses_optimisation_supp: Optional[float] = None
     balance_vente_taux_pct: Optional[float] = None
     projection_horizon_annees: Optional[int] = None
     # Croissances annuelles (FRACTIONS, 0.03 = 3 %) — partagées avec
@@ -274,7 +278,7 @@ class LeadAnalysisUpdate(BaseModel):
         default=None,
         pattern=(
             r"^(preteur_b|traditionnel|conventionnel|schl_std|"
-            r"aph_50|aph_100)$"
+            r"aph_50|aph_100|residentiel)$"
         ),
     )
     # Programme retenu du mode traditionnel.
@@ -298,6 +302,13 @@ class LeadAnalysisUpdate(BaseModel):
     optimisation_moment: Optional[str] = Field(
         default=None, pattern=r"^(post_achat|pre_achat)$"
     )
+    # Mode résidentiel (2026-09-08).
+    ltv_residentiel_pct: Optional[float] = Field(default=None, ge=0, le=100)
+    amort_residentiel_annees: Optional[int] = Field(default=None, ge=1, le=40)
+    depenses_residentiel_json: Optional[str] = Field(
+        default=None, max_length=20_000
+    )
+    depenses_optimisation_supp: Optional[float] = Field(default=None, ge=0)
     balance_vente_taux_pct: Optional[float] = Field(
         default=None, ge=0, le=30
     )
@@ -407,6 +418,31 @@ def _map_extracted_to_lead(data: dict) -> dict:
 # Défauts appliqués à la création d'une fiche `LeadAnalysis`
 # pour pré-remplir les champs manuels d'analyse financière.
 # Modifiables ensuite par l'utilisateur dans la fiche.
+def _parse_lignes_depenses(raw: Optional[str]) -> list[dict]:
+    """Mode résidentiel — lignes libres ``[{label, montant}]``.
+    Défensif : tout ce qui n'est pas une liste de dicts → []."""
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(data, list):
+        return []
+    out: list[dict] = []
+    for it in data[:100]:
+        if not isinstance(it, dict):
+            continue
+        try:
+            out.append({
+                "label": str(it.get("label") or "")[:120],
+                "montant": float(it.get("montant") or 0),
+            })
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 def _parse_unites(raw: Optional[str]) -> list[dict]:
     """Phase 3 — liste d'unités ``{typo, loyer_actuel, loyer_cible,
     optimiser}``. Défensif : tout ce qui n'est pas une liste de dicts
@@ -1867,6 +1903,8 @@ RECALC_INPUT_FIELDS = {
     "frais_demarrage_overrides_json", "frais_demarrage_financables_json",
     "strategie_acquisition", "programme_achat", "refi_retenu",
     "balance_vente_montant", "cashback_montant", "optimisation_moment",
+    "ltv_residentiel_pct", "amort_residentiel_annees",
+    "depenses_residentiel_json", "depenses_optimisation_supp",
     "balance_vente_taux_pct", "projection_horizon_annees",
     "tri_croissance_loyers", "tri_croissance_depenses", "unites_json",
 }
@@ -2018,6 +2056,19 @@ async def _compute_and_store(rec, db) -> dict:
         / 100.0,
         cashback_montant=float(rec.cashback_montant or 0),
         optimisation_pre_achat=(rec.optimisation_moment == "pre_achat"),
+        # Mode résidentiel (2026-09-08).
+        ltv_residentiel=(
+            float(rec.ltv_residentiel_pct) / 100.0
+            if rec.ltv_residentiel_pct is not None
+            else 0.80
+        ),
+        amort_residentiel_annees=int(rec.amort_residentiel_annees or 25),
+        depenses_residentiel=_parse_lignes_depenses(
+            rec.depenses_residentiel_json
+        ),
+        depenses_optimisation_supp=float(
+            rec.depenses_optimisation_supp or 0
+        ),
         # Phase 2 — détention + refi an N (achats directs). Les
         # croissances réutilisent celles du TRI (source unique).
         projection_horizon_annees=int(rec.projection_horizon_annees or 5),
@@ -2110,6 +2161,14 @@ async def _compute_and_store(rec, db) -> dict:
         rec.best_refi_amount = trad["best_refi"]["argent_dispo"]
         rec.best_refi_program = (
             f"{trad['best_refi']['label']} · refi an {trad['horizon']}"
+        )
+    # Résidentiel : la carte = cash à sortir + cashflow optimisé/an.
+    res = results_dict.get("residentiel")
+    if res:
+        rec.mdf_preteur_b = res["mdf_cash"]
+        rec.best_refi_amount = res["cashflow_optimise"]
+        rec.best_refi_program = (
+            f"Résidentiel (prêt {res['ltv'] * 100:.0f} %) · cashflow/an"
         )
     return results_dict
 
@@ -3393,6 +3452,28 @@ def _derive_tri_auto_inputs(results: dict) -> dict:
     prêt réellement accordé (cashback → plus gros prêt sur le prix
     réel) + balance de vente. Retourne un dict des 8 clés auto."""
     prix = float(results.get("prix_achat") or 0)
+
+    res = results.get("residentiel")
+    if isinstance(res, dict) and res.get("pret_retenu") is not None:
+        # Résidentiel : dette = prêt + BV, MDF = cash à sortir, loyers /
+        # dépenses optimisés, pas de valeur économique → prix.
+        dette = float(res.get("pret_retenu") or 0) + float(
+            res.get("balance_vente") or 0
+        )
+        total = float(res.get("frais_demarrage_total") or 0)
+        cash = res.get("frais_demarrage_cash")
+        return {
+            "prix": prix,
+            "rpv_achat": (dette / prix) if prix > 0 else 0.0,
+            "pret_constr": (
+                max(0.0, total - float(cash)) if cash is not None else 0.0
+            ),
+            "mdf": float(res.get("mdf_cash") or 0),
+            "loyers2": float(res.get("revenus_optimises") or 0),
+            "dep2": float(res.get("depenses_optimisees") or 0),
+            "valeur2": prix,
+            "rpv_refi": float(res.get("ltv") or 0),
+        }
 
     trad = results.get("traditionnel")
     if isinstance(trad, dict) and isinstance(trad.get("refi"), dict):
