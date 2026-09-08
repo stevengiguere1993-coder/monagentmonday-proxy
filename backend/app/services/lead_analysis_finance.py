@@ -1192,6 +1192,9 @@ class FinanceResults:
             # = mdf_preteur_b
             "mdf_preteur_b_pct": mdf_pct,
             "taux_interet_preteur_b_projet": self.inputs.taux_interet_preteur_b_projet,
+            # Taux (fractions) — repris par le TRI pour amortir les prêts.
+            "taux_interet_achat": self.inputs.taux_interet_achat,
+            "taux_interet_refi": self.inputs.taux_interet_refi,
             "taux_inoccupation_pct": self.inputs.taux_inoccupation_pct,
             "frais_dossier_preteur_pct": self.inputs.frais_dossier_preteur_pct,
             # Alias conservé pour rétrocompat UI front-end.

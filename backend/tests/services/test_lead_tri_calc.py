@@ -158,3 +158,37 @@ def test_horizons_dynamiques_selon_annee_du_refi():
     r2 = compute_tri(**base)
     assert r2["horizons_list"] == [2, 7, 12]
     assert r2["tri"]["an2"] == compute_tri(**base, annee_refi=2)["tri"]["an2"]
+
+
+def test_amortissement_des_prets():
+    """Retour Phil 2026-09-08 : le solde remboursé à chaque refi est le
+    solde AMORTI du prêt précédent, pas son montant d'origine ; le prêt
+    d'achat s'amortit seulement si demandé (institution / résidentiel)."""
+    from app.services.lead_analysis_finance import solde_pret_canadien
+
+    base = dict(SCENARIOS[0][1])
+    hist = compute_tri(**base, annee_refi=5)
+    amort = compute_tri(
+        **base, annee_refi=5, taux_refi=0.04, amort_refi=35,
+        taux_achat=0.045, amort_achat=25, amortissement_initial=True,
+    )
+    h5, h10 = amort["horizons"]["5"], amort["horizons"]["10"]
+    # Prêt d'achat amorti 5 ans → dette à rembourser plus petite.
+    solde5 = solde_pret_canadien(hist["bases"]["hypotheque"], 0.045, 25, 5)
+    assert abs(amort["bases"]["solde_hypotheque_an_refi"] - solde5) < 0.01
+    assert amort["bases"]["amortissement_initial"] is True
+    assert abs(h5["solde_avant_refi"] - (solde5 + base["pret_constr"])) < 0.01
+    assert h5["capital_rembourse"] > 0
+    assert h5["argent_dispo"] > hist["horizons"]["5"]["argent_dispo"]
+    # Refi an 10 : rembourse le solde amorti du prêt de l'an 5.
+    solde10 = solde_pret_canadien(h5["pret_max_refi"], 0.04, 35, 5)
+    assert abs(h10["solde_avant_refi"] - solde10) < 0.01
+    assert abs(h10["argent_dispo"] - (h10["pret_max_refi"] - solde10)) < 0.01
+    assert h10["argent_dispo"] > hist["horizons"]["10"]["argent_dispo"]
+    # Sans paramètres : identique au calcul historique.
+    assert hist["horizons"]["5"]["solde_avant_refi"] == hist["bases"]["hypotheque"] + base["pret_constr"]
+    assert hist["horizons"]["10"]["capital_rembourse"] == 0.0
+    # Prêteur B : prêt d'achat NON amorti même avec un taux fourni.
+    b = compute_tri(**base, annee_refi=2, taux_achat=0.08, amort_achat=25,
+                    amortissement_initial=False, taux_refi=0.04, amort_refi=35)
+    assert b["bases"]["solde_hypotheque_an_refi"] == b["bases"]["hypotheque"]

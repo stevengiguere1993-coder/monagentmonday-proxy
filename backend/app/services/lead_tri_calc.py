@@ -100,6 +100,11 @@ def compute_tri(
     cr_loyers: Optional[float],
     cr_dep: Optional[float],
     annee_refi: int = 2,
+    taux_achat: Optional[float] = None,
+    amort_achat: Optional[int] = None,
+    amortissement_initial: bool = False,
+    taux_refi: Optional[float] = None,
+    amort_refi: Optional[int] = None,
 ) -> dict:
     """Calcule le TRI investisseur et toutes les métriques d'affichage.
 
@@ -122,7 +127,16 @@ def compute_tri(
 
     Retourne un dict riche : bases, projection par horizon, sommaire,
     3 lignes de flux et les 3 TRI (sortie an 2 / an 7 / an 12).
+
+    Amortissement (retour Phil 2026-09-08) : ``taux_refi`` +
+    ``amort_refi`` font s'amortir le prêt de refi entre deux horizons
+    (le capital remboursé par l'immeuble n'est plus « à rembourser ») ;
+    ``amortissement_initial`` + ``taux_achat`` + ``amort_achat`` font
+    de même pour le prêt d'achat (institution / résidentiel — un prêt
+    prêteur B est intérêts seulement). Sans ces paramètres : calcul
+    historique (prêts remboursés à leur montant d'origine).
     """
+    from app.services.lead_analysis_finance import solde_pret_canadien
     # ── Normalisation défensive ──────────────────────────────────────
     prix = _f(prix)
     rpv_achat = _f(rpv_achat)
@@ -146,6 +160,18 @@ def compute_tri(
 
     # ── ① Bases ──────────────────────────────────────────────────────
     hypotheque = rpv_achat * prix
+    # Solde du prêt d'achat à l'an du refi : amorti si demandé.
+    if amortissement_initial and taux_achat is not None and amort_achat:
+        solde_achat_refi = solde_pret_canadien(
+            hypotheque, _f(taux_achat), int(amort_achat), h0
+        )
+    else:
+        solde_achat_refi = hypotheque
+
+    def _solde_refi(montant: float, annees: int) -> float:
+        if taux_refi is not None and amort_refi:
+            return solde_pret_canadien(montant, _f(taux_refi), int(amort_refi), annees)
+        return montant
     marge = capital - mdf
     rno2 = loyers2 - dep2
     # Multiplicateur de valeur = valeur / RNO (≈ inverse du cap rate).
@@ -179,9 +205,19 @@ def compute_tri(
 
     # Argent disponible à chaque refinancement.
     dispo: Dict[int, float] = {}
-    dispo[h0] = pret_refi[h0] + marge - (hypotheque + pret_constr)
-    dispo[h1] = pret_refi[h1] - pret_refi[h0]
-    dispo[h2] = pret_refi[h2] - pret_refi[h1]
+    # Dette remboursée à chaque refi = SOLDE du prêt précédent (capital
+    # déjà remboursé par l'immeuble déduit), pas son montant d'origine.
+    solde_avant: Dict[int, float] = {
+        h0: solde_achat_refi + pret_constr,
+        h1: _solde_refi(pret_refi[h0], h1 - h0),
+        h2: _solde_refi(pret_refi[h1], h2 - h1),
+    }
+    dette_origine: Dict[int, float] = {
+        h0: hypotheque + pret_constr, h1: pret_refi[h0], h2: pret_refi[h1],
+    }
+    dispo[h0] = pret_refi[h0] + marge - solde_avant[h0]
+    dispo[h1] = pret_refi[h1] - solde_avant[h1]
+    dispo[h2] = pret_refi[h2] - solde_avant[h2]
 
     # ── ④ Cascade : retour de capital prioritaire + surplus partagé ──
     retour: Dict[int, float] = {}
@@ -234,6 +270,8 @@ def compute_tri(
             "valeur_immeuble": valeur[h],
             "pret_max_refi": pret_refi[h],
             "argent_dispo": dispo[h],
+            "solde_avant_refi": solde_avant[h],
+            "capital_rembourse": dette_origine[h] - solde_avant[h],
             "equite": equite[h],
             "retour_capital": retour[h],
             "surplus": surplus[h],
@@ -264,6 +302,10 @@ def compute_tri(
         },
         "bases": {
             "hypotheque": hypotheque,
+            "solde_hypotheque_an_refi": solde_achat_refi,
+            "amortissement_initial": bool(
+                amortissement_initial and taux_achat is not None and amort_achat
+            ),
             "marge": marge,
             "rno2": rno2,
             "multiplicateur": multiplicateur,

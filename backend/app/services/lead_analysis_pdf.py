@@ -1374,6 +1374,51 @@ def _derive_tri_auto_inputs(results: dict) -> dict:
         "rpv_refi": float(best.get("ltv") or 0),
     }
 
+def _amortissement_tri(results: dict, rec=None) -> dict:
+    """Taux / amortissements repris de l'analyse pour que le TRI amortisse
+    les prêts (retour Phil 2026-09-08). Taux en FRACTION. Le prêt d'achat
+    n'est amorti qu'en institution traditionnelle / résidentiel (prêteur B
+    = intérêts seulement)."""
+    def _pct(attr):
+        v = getattr(rec, attr, None) if rec is not None else None
+        return float(v) / 100.0 if v is not None else None
+
+    taux_achat = results.get("taux_interet_achat")
+    taux_refi = results.get("taux_interet_refi")
+    if taux_achat is None:
+        taux_achat = _pct("taux_interet_achat_pct")
+    if taux_refi is None:
+        taux_refi = _pct("taux_interet_refi_pct")
+    res = results.get("residentiel")
+    trad = results.get("traditionnel")
+    if isinstance(res, dict) and res.get("pret_retenu") is not None:
+        t = float(res.get("taux_interet") or (taux_achat or 0))
+        a = int(res.get("amort_annees") or 25)
+        return {
+            "taux_achat": t, "amort_achat": a, "amortissement_initial": True,
+            "taux_refi": t, "amort_refi": a,
+        }
+    if isinstance(trad, dict) and isinstance(trad.get("refi"), dict):
+        achat = (trad.get("achat") or {}).get(trad.get("programme_retenu") or "") or {}
+        best = (trad.get("refi") or {}).get((trad.get("best_refi") or {}).get("key")) or {}
+        return {
+            "taux_achat": float(taux_achat or 0),
+            "amort_achat": int(achat.get("amort_annees") or 25),
+            "amortissement_initial": True,
+            "taux_refi": float(taux_refi or 0),
+            "amort_refi": int(best.get("amort_annees") or 25),
+        }
+    best_b = _best_refi_scenario(results) or {}
+    achat_b = (results.get("scenarios") or {}).get("achat") or {}
+    return {
+        "taux_achat": float(taux_achat or 0),
+        "amort_achat": int(achat_b.get("amort_annees") or 25),
+        # Prêteur B : intérêts seulement pendant le projet.
+        "amortissement_initial": False,
+        "taux_refi": float(taux_refi or 0),
+        "amort_refi": int(best_b.get("amort_annees") or 25),
+    }
+
 
 def _annee_refi_de(rec) -> int:
     """Année du refinancement de la fiche (retour Phil 2026-09-04) :
@@ -1452,6 +1497,7 @@ def _tri_section(rl, rec: LeadAnalysis, results: Optional[dict], *, s):
     try:
         from app.services.lead_tri_calc import compute_tri  # type: ignore
         auto = _derive_tri_auto_inputs(results)
+        amort = _amortissement_tri(results, rec)
         manual = _persisted_manual_inputs(rec)
         tri_data = compute_tri(
             prix=auto["prix"],
@@ -1467,6 +1513,11 @@ def _tri_section(rl, rec: LeadAnalysis, results: Optional[dict], *, s):
             cr_loyers=manual["cr_loyers"],
             cr_dep=manual["cr_dep"],
             annee_refi=_annee_refi_de(rec),
+            taux_achat=amort.get("taux_achat") or None,
+            amort_achat=amort.get("amort_achat") or None,
+            amortissement_initial=bool(amort.get("amortissement_initial")),
+            taux_refi=amort.get("taux_refi") or None,
+            amort_refi=amort.get("amort_refi") or None,
         )
     except Exception as exc:  # noqa: BLE001
         log.warning("Section TRI PDF — calcul échoué : %s", exc)
@@ -1541,6 +1592,7 @@ def _tri_section(rl, rec: LeadAnalysis, results: Optional[dict], *, s):
         Paragraph("Horizon", s["th_left"]),
         Paragraph("Valeur immeuble", s["th"]),
         Paragraph("Prêt max refi", s["th"]),
+        Paragraph("Solde à rembourser", s["th"]),
         Paragraph("Cash investisseur", s["th"]),
         Paragraph("Valeur des parts", s["th"]),
         Paragraph("Patrimoine", s["th"]),
@@ -1561,12 +1613,13 @@ def _tri_section(rl, rec: LeadAnalysis, results: Optional[dict], *, s):
             Paragraph(f"An {h}", s["small"]),
             Paragraph(_money(hd.get("valeur_immeuble")), s["num"]),
             Paragraph(_money(hd.get("pret_max_refi")), s["num"]),
+            Paragraph(_money(hd.get("solde_avant_refi")), s["num"]),
             Paragraph(_money(cash_inv), s["num"]),
             Paragraph(_money(val_parts), s["num"]),
             Paragraph(f"<b>{_money(patrimoine)}</b>", s["num_b"]),
         ])
     th = Table(
-        rows, colWidths=[20 * mm, "*", "*", "*", "*", "*"], repeatRows=1)
+        rows, colWidths=[20 * mm, "*", "*", "*", "*", "*", "*"], repeatRows=1)
     th.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(_C_AMBER_SOFT)),
