@@ -91,3 +91,29 @@ le connecteur MCP SANS que Phil ait à le demander :
    `app/core/api_ia_couverture.py` — le test
    `test_smoke_couverture_api_ia` ÉCHOUE sinon. C'est voulu : l'acte
    d'ajout est la preuve que l'exposition a été considérée.
+
+## Règle de promotion en prod (incident 2026-09-08)
+
+Le 2026-09-08, une promotion `dev → main` a vidé le pipeline et les fiches
+de prospection en prod (colonnes attendues par le code absentes en base →
+toutes les lectures de `lead_analyses` en erreur). Depuis :
+
+1. **Jamais de promotion sans le GO EXPLICITE de Phil après SON test sur
+   staging** (`h2-0-web-dev`). « Merge quand c'est fini » ne vaut pas GO :
+   demander « as-tu testé la dernière version sur staging ? ».
+2. **Promotion par PR `dev → main`**, jamais de push direct. Un revert PR
+   est préparé AVANT de merger (branche `hotfix/revert-<sujet>`).
+3. **Garde-fous techniques** (ne pas contourner) : `/health` répond 503
+   « degraded » si une colonne des modèles manque en base → Render refuse
+   la nouvelle version et garde l'ancienne ; au démarrage,
+   `app/db/schema_check.ajouter_colonnes_manquantes()` ajoute toute colonne
+   nullable manquante (une colonne NOT NULL sans défaut exige une vraie
+   migration + `ensure_critical_columns`).
+4. **Vérification IMMÉDIATE après déploiement**, avant de dire « c'est
+   fait » : `GET /health` → `schema.ok: true`, puis lectures par le
+   connecteur MCP (`kratos_list_analyses`, `kratos_list_deals`,
+   `kratos_list_entities` pour chaque pôle touché). Si un échec : merger le
+   revert préparé, prévenir Phil, chercher la cause ensuite.
+5. Après un revert sur `main`, **ne jamais resynchroniser `main → dev` tel
+   quel** (les reverts effaceraient le chantier sur dev) : re-promouvoir
+   par « revert des reverts » une fois la cause corrigée.

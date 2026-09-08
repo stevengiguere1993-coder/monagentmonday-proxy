@@ -135,3 +135,26 @@ if __name__ == "__main__":
     test_irr_cas_simple()
     test_defensif_contre_none_et_zero()
     print("Tous les tests TRI passent.")
+
+
+def test_horizons_dynamiques_selon_annee_du_refi():
+    """Retour Phil 2026-09-04 : le TRI se projette à l'année du refi de
+    l'analyse, puis +5 et +10 ans — plus « 2 / 7 / 12 » en dur."""
+    base = dict(SCENARIOS[0][1])
+    r5 = compute_tri(**base, annee_refi=5)
+    assert r5["annee_refi"] == 5
+    assert r5["horizons_list"] == [5, 10, 15]
+    assert set(r5["horizons"].keys()) == {"5", "10", "15"}
+    assert set(r5["tri"].keys()) == {"an5", "an10", "an15"}
+    for k in ("cash_an5", "cash_an10", "cash_an15", "valeur_parts_an15"):
+        assert k in r5["sommaire"]
+    for f in r5["flux"].values():
+        assert len(f) == 16
+        assert abs(f[0] - (-575000)) < 0.01
+    # Exposants de croissance : an 5 = référence, an 10 = ×(1+g)^5.
+    h5, h10 = r5["horizons"]["5"], r5["horizons"]["10"]
+    assert abs(h10["loyers"] - h5["loyers"] * (1 + base["cr_loyers"]) ** 5) < 1e-6
+    # Défaut (annee_refi=2) = résultat historique, identique.
+    r2 = compute_tri(**base)
+    assert r2["horizons_list"] == [2, 7, 12]
+    assert r2["tri"]["an2"] == compute_tri(**base, annee_refi=2)["tri"]["an2"]

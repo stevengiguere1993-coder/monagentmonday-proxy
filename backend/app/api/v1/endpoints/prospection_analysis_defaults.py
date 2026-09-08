@@ -456,6 +456,11 @@ _FIXED_POSTES: tuple[tuple[str, str, str], ...] = (
     ("frais_dossier_preteur", "Frais de dossier du prêteur", "pct"),
     ("interets", "Intérêts pendant projet (portage)", "formule"),
     ("revenus_nets_pendant_projet", "Revenus nets pendant projet", "formule"),
+    # Sept. 2026 — postes permanents (retours Phil) : intérêts de la
+    # balance de vente (formule) et réserve de détention (saisie sur la
+    # fiche, institution traditionnelle).
+    ("interets_balance_vente", "Intérêts balance de vente", "formule"),
+    ("detention", "Détention (institution traditionnelle)", "input_fiche"),
 )
 
 # Index rapide clé → (label par défaut, nature) pour les postes fixes.
