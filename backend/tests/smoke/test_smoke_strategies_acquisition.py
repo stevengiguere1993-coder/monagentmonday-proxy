@@ -173,17 +173,31 @@ def test_traditionnel_conventionnel():
     assert p0["revenus"] == 100_000.0
     assert abs(p1["revenus"] - 103_000.0) < 0.01
 
-    # Refi (définition Phil 2026-09-02) : argent dégagé = prêt max −
-    # TOTAL DÉPENSÉ (prix + frais), et le best est le max.
+    # Refi (retour Phil 2026-09-08) : argent NET dégagé = prêt max −
+    # dette à l'an H (solde + BV + frais roulés) − cash injecté ; le
+    # capital remboursé pendant la détention est acquis.
     assert abs(
         t["total_depense"]
         - (1_000_000 + t["frais_demarrage_total"])
     ) < 0.01
+    assert abs(t["dette_an_h"] - t["solde_retenu_an_h"]) < 0.01
+    assert abs(t["cash_injecte"] - t["mdf_cash"]) < 0.01
+    assert abs(
+        t["capital_rembourse"] - (t["pret_retenu"] - t["solde_retenu_an_h"])
+    ) < 0.01
+    assert t["capital_rembourse"] > 0
     for v in t["refi"].values():
         assert abs(
-            (v["financement"] - t["total_depense"])
+            (v["financement"] - t["dette_an_h"] - t["cash_injecte"])
             - v["equite_a_la_fin"]
         ) < 0.01
+        # = (prêt − total dépensé) + capital remboursé.
+        assert abs(
+            v["equite_a_la_fin"]
+            - (v["financement"] - t["total_depense"] + t["capital_rembourse"])
+        ) < 0.02
+    best = t["best_refi"]
+    assert best["refi_possible"] == (best["argent_dispo"] >= -0.005)
     best = t["best_refi"]
     assert abs(
         best["argent_dispo"]

@@ -3335,7 +3335,8 @@ type ProjPoint = {
   pret_max?: number;
   /** Prêt max − solde du prêt en place. */
   ecart_pret?: number;
-  /** Prêt max − total dépensé (définition Phil). */
+  /** Jusqu'au refi : prêt max − dette − cash injecté ; après : prêt
+   *  max − solde du prêt en place. */
   argent_degage?: number;
 };
 
@@ -3395,6 +3396,13 @@ type AnalysisResults = {
     refi: Record<string, ScenarioResult | null>;
     projection: ProjPoint[];
     total_depense?: number;
+    /** Dette à rembourser à l'an H : solde + BV + frais roulés. */
+    dette_an_h?: number;
+    /** Cash injecté à l'achat (MDF nette + frais). */
+    cash_injecte?: number;
+    /** Capital remboursé pendant la détention (prêt initial − solde). */
+    capital_rembourse?: number;
+    frais_finances?: number;
     frais_demarrage_cash?: number;
     programme_retenu_auto?: string;
     meilleur_refi_key?: string;
@@ -3707,7 +3715,7 @@ function ProjectionSection({
                 ["Prêt max possible (réf.)", (pt) => pt.pret_max ?? 0, "pret"],
                 ["Prêt max − solde", (pt) => pt.ecart_pret ?? 0, "signe"],
                 [
-                  "Argent dégagé (prêt max − total dépensé)",
+                  "Argent net dégagé (− dette − cash injecté ; après le refi : prêt max − solde)",
                   (pt) => pt.argent_degage ?? 0,
                   "signe"
                 ]
@@ -3767,6 +3775,8 @@ function TradColonnes({
   detailMdf,
   modeRefi,
   totalDepense,
+  detteAnH,
+  cashInjecte,
   onRetenir
 }: {
   cols: Record<string, ScenarioResult | null>;
@@ -3781,9 +3791,13 @@ function TradColonnes({
     AnalysisResults["traditionnel"]
   >["detail_mdf_par_programme"];
   modeRefi?: boolean;
-  /** Refi : « Total dépensé » (prêt initial + tout le cash) — même
-   *  valeur pour toutes les colonnes, affichée sous Prêt accordé. */
+  /** Refi : « Total dépensé » (prêt initial + tout le cash) — info. */
   totalDepense?: number;
+  /** Refi : dette à rembourser à l'an H (solde + BV + frais roulés)
+   *  et cash injecté à l'achat — mêmes valeurs pour toutes les
+   *  colonnes (retour Phil 2026-09-08). */
+  detteAnH?: number;
+  cashInjecte?: number;
   /** Achat : bouton « Retenir » par colonne. */
   onRetenir?: (k: string) => void;
 }) {
@@ -3805,13 +3819,30 @@ function TradColonnes({
     { label: "Prêt accordé", pick: (s) => s.financement, bold: true },
     ...(modeRefi
       ? [
+          ...(detteAnH != null && cashInjecte != null
+            ? [
+                {
+                  label: "− Dette à rembourser (solde du prêt d'achat + BV + frais roulés)",
+                  pick: () => -(detteAnH ?? 0)
+                },
+                {
+                  label: "= Cash dégagé par le refi (prêt − dette)",
+                  pick: (s: ScenarioResult) => s.financement - (detteAnH ?? 0),
+                  bold: true
+                },
+                {
+                  label: "− Cash injecté à l'achat (MDF nette + frais)",
+                  pick: () => -(cashInjecte ?? 0)
+                }
+              ]
+            : [
+                {
+                  label: "Total dépensé (prêt initial + cash)",
+                  pick: () => totalDepense
+                }
+              ]),
           {
-            label: "Total dépensé (prêt initial + cash)",
-            pick: () => totalDepense,
-            bold: false
-          },
-          {
-            label: "Argent dégagé (prêt − total dépensé)",
+            label: "= Argent NET dégagé",
             pick: (s: ScenarioResult) => s.equite_a_la_fin,
             bold: true,
             color: true
@@ -4135,7 +4166,7 @@ function TraditionnelRefiPanel({
                 : "text-rose-300/80"
             }`}
           >
-            Argent dégagé (référence)
+            Argent NET dégagé (référence)
           </p>
           <p
             className={`font-mono text-sm font-bold tabular-nums ${
@@ -4172,19 +4203,19 @@ function TraditionnelRefiPanel({
         {best.refi_possible ? (
           <>
             ✅ À l&apos;an {t.horizon}, le refinancement{" "}
-            <strong>{best.label}</strong> dégage{" "}
-            <strong>{fmtMoney(best.argent_dispo)}</strong> (après
-            remboursement du prêt d&apos;achat
-            {t.balance_vente > 0 ? " et de la balance de vente" : ""})
-            — assez pour ressortir ta mise de fonds de{" "}
-            {fmtMoney(t.mdf_cash)}.
+            <strong>{best.label}</strong> dégage NET{" "}
+            <strong>{fmtMoney(best.argent_dispo)}</strong> après
+            remboursement de la dette ({fmtMoney(t.dette_an_h ?? 0)}) et
+            récupération de tout le cash injecté (
+            {fmtMoney(t.cash_injecte ?? t.mdf_cash)}).
           </>
         ) : (
           <>
             ⚠️ À l&apos;an {t.horizon}, le refinancement de référence (
-            {best.label}) dégage {fmtMoney(best.argent_dispo)} — il
-            manque <strong>{fmtMoney(best.manque)}</strong> pour
-            ressortir ta mise de fonds de {fmtMoney(t.mdf_cash)}.
+            {best.label}) ne ressort pas tout le cash injecté (
+            {fmtMoney(t.cash_injecte ?? t.mdf_cash)}) : il manque{" "}
+            <strong>{fmtMoney(best.manque)}</strong> après remboursement de
+            la dette ({fmtMoney(t.dette_an_h ?? 0)}).
           </>
         )}
       </div>
@@ -4195,13 +4226,19 @@ function TraditionnelRefiPanel({
         meilleur={meilleurKey}
         modeRefi
         totalDepense={t.total_depense}
+        detteAnH={t.dette_an_h}
+        cashInjecte={t.cash_injecte}
       />
       <p className="mt-2 text-[10px] text-white/40">
-        Total dépensé = prêt initial + tout le cash (mise de fonds,
-        frais, balance de vente) = {fmtMoney(t.total_depense)}. Argent
-        dégagé = prêt max − total dépensé : à ce montant remboursé, il
-        ne reste plus 1 $ à nous dans le projet. ★ = le meilleur
-        automatique ; la colonne verte = ta référence.
+        Dette à l&apos;an {t.horizon} = solde du prêt d&apos;achat{" "}
+        {fmtMoney(t.solde_retenu_an_h)}
+        {t.balance_vente > 0 ? ` + balance de vente ${fmtMoney(t.balance_vente)}` : ""}
+        {(t.frais_finances ?? 0) > 0 ? ` + frais roulés ${fmtMoney(t.frais_finances ?? 0)}` : ""}
+        {" "}= {fmtMoney(t.dette_an_h ?? 0)}. Le capital remboursé pendant
+        la détention ({fmtMoney(t.capital_rembourse ?? 0)}) est déjà à
+        toi — c&apos;est l&apos;écart avec « prêt − total dépensé »
+        (total dépensé = prêt initial + cash = {fmtMoney(t.total_depense)}).
+        ★ = le meilleur automatique ; la colonne verte = ta référence.
       </p>
 
       <div className="mt-4">
