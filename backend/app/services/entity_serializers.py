@@ -795,6 +795,72 @@ def _primary_contact(obj: Any) -> Optional[dict]:
 # ── Registre + façade ──────────────────────────────────────────────
 
 
+def serialize_imm_tal_dossier(obj: Any, level: str = "summary") -> dict:
+    """Dossier TAL d'un bail (pôle Immobilier, 2026-09-09).
+
+    Résumé : motif, statut, dates, bail/locataire/logement/immeuble.
+    Le libellé combine motif + statut pour qu'un Claude voie d'un coup
+    d'œil de quoi il s'agit."""
+    motif = _str(_get(obj, "motif"))
+    statut = _str(_get(obj, "statut"))
+    data: dict[str, Any] = {
+        "entity_type": "imm_tal_dossier",
+        "id": getattr(obj, "id", None),
+        "label": f"Dossier TAL {motif or ''} ({statut or ''})".strip(),
+        "pole": "immobilier",
+        "motif": motif,
+        "statut": statut,
+        "status": statut,
+        "numero_dossier": _str(_get(obj, "numero_dossier")),
+        "bail_id": _get(obj, "bail_id"),
+        "locataire_id": _get(obj, "locataire_id"),
+        "logement_id": _get(obj, "logement_id"),
+        "immeuble_id": _get(obj, "immeuble_id"),
+        "ouvert_le": _iso(_get(obj, "ouvert_le")),
+        "audience_le": _iso(_get(obj, "audience_le")),
+        "decision_le": _iso(_get(obj, "decision_le")),
+    }
+    if level == "full":
+        data.update(
+            {
+                "notes": _str(_get(obj, "notes")),
+                "created_by_email": _str(_get(obj, "created_by_email")),
+                "created_at": _iso(_get(obj, "created_at")),
+                "updated_at": _iso(_get(obj, "updated_at")),
+            }
+        )
+    return _drop_none(data)
+
+
+def serialize_imm_locataire_contact(obj: Any, level: str = "summary") -> dict:
+    """Garant / colocataire / occupant / contact d'urgence d'un
+    locataire (pôle Immobilier, 2026-09-09)."""
+    data: dict[str, Any] = {
+        "entity_type": "imm_locataire_contact",
+        "id": getattr(obj, "id", None),
+        "label": _str(_get(obj, "full_name")),
+        "full_name": _str(_get(obj, "full_name")),
+        "pole": "immobilier",
+        "role": _str(_get(obj, "role")),
+        "locataire_id": _get(obj, "locataire_id"),
+        "relation": _str(_get(obj, "relation")),
+        "paie_le_loyer": bool(_get(obj, "paie_le_loyer")),
+        "actif": bool(_get(obj, "actif")),
+    }
+    if level == "full":
+        data.update(
+            {
+                "email": _str(_get(obj, "email")),
+                "phone": _str(_get(obj, "phone")),
+                "notes": _str(_get(obj, "notes")),
+                "created_by_email": _str(_get(obj, "created_by_email")),
+                "created_at": _iso(_get(obj, "created_at")),
+                "updated_at": _iso(_get(obj, "updated_at")),
+            }
+        )
+    return _drop_none(data)
+
+
 def _drop_none(data: dict) -> dict:
     """Retire les clés à valeur None pour alléger la charge utile, tout
     en GARDANT toujours ``entity_type`` et ``id`` (identité de l'objet)."""
@@ -818,6 +884,8 @@ SERIALIZERS: dict[str, Callable[..., dict]] = {
     "devlog_project": serialize_devlog_project,
     "project": serialize_project,
     "entreprise": serialize_entreprise,
+    "imm_tal_dossier": serialize_imm_tal_dossier,
+    "imm_locataire_contact": serialize_imm_locataire_contact,
 }
 
 

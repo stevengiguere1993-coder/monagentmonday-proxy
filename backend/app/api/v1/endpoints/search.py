@@ -27,6 +27,7 @@ from app.models.client import Client
 from app.models.contact_request import ContactRequest
 from app.models.employe import Employe
 from app.models.facture import Facture
+from app.models.immobilier import ImmLocataireContact, Locataire
 from app.models.project import Project
 from app.models.soumission import Soumission
 
@@ -42,6 +43,7 @@ ResultKind = Literal[
     "project",
     "bon",
     "employe",
+    "locataire",
 ]
 
 
@@ -240,6 +242,64 @@ async def global_search(
                 href=f"/app/employes/{e.id}",
             )
         )
+
+    # Locataires — par leur nom/courriel/téléphone ET par leurs garants /
+    # contacts (2026-09-09 : « quand je cherche Jacques, je vois
+    # Sébastien »). Le sous-titre dit par qui la fiche a été trouvée.
+    loc_hits: dict[int, SearchHit] = {}
+    rows = (
+        await db.execute(
+            select(Locataire)
+            .where(
+                or_(
+                    Locataire.full_name.ilike(needle),
+                    Locataire.email.ilike(needle),
+                    Locataire.phone.ilike(needle),
+                )
+            )
+            .order_by(Locataire.full_name.asc())
+            .limit(limit)
+        )
+    ).scalars().all()
+    for lo in rows:
+        loc_hits[lo.id] = SearchHit(
+            kind="locataire",
+            id=lo.id,
+            title=lo.full_name,
+            subtitle=lo.email or lo.phone,
+            href=f"/immobilier/locataires/{lo.id}",
+        )
+    if len(loc_hits) < limit:
+        contacts = (
+            await db.execute(
+                select(ImmLocataireContact, Locataire)
+                .join(
+                    Locataire,
+                    Locataire.id == ImmLocataireContact.locataire_id,
+                )
+                .where(
+                    ImmLocataireContact.actif.is_(True),
+                    or_(
+                        ImmLocataireContact.full_name.ilike(needle),
+                        ImmLocataireContact.email.ilike(needle),
+                        ImmLocataireContact.phone.ilike(needle),
+                    ),
+                )
+                .order_by(Locataire.full_name.asc())
+                .limit(limit)
+            )
+        ).all()
+        for c, lo in contacts:
+            if lo.id in loc_hits or len(loc_hits) >= limit:
+                continue
+            loc_hits[lo.id] = SearchHit(
+                kind="locataire",
+                id=lo.id,
+                title=lo.full_name,
+                subtitle=f"{c.role} : {c.full_name}",
+                href=f"/immobilier/locataires/{lo.id}",
+            )
+    hits.extend(loc_hits.values())
 
     # Silence unused-import warnings for helpers reserved for future use.
     _ = func

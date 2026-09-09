@@ -23,6 +23,10 @@ import { TableauSuiviBaux } from "@/components/immobilier/tableau-suivi-baux";
 import { type SuiviBailRow } from "@/components/immobilier/fin-bail";
 import { authedFetch } from "@/lib/auth";
 import {
+  GarantsContactsLecture,
+  TalPastille
+} from "@/components/immobilier/tal-garants";
+import {
   AuMoisToggle,
   ResilierBailButton,
   BailDocActions,
@@ -566,6 +570,7 @@ export default function LogementDetailPage({
                 <h1 className="flex flex-wrap items-center gap-3 text-2xl font-bold text-white">
                   Logement {lg.numero} — {dossier.immeuble.name}
                   <StatutBadge status={lg.status} />
+                  <TalPastille logementId={logementId} />
                 </h1>
                 <p className="mt-1 flex items-center gap-1.5 text-sm text-white/60">
                   <Building2 className="h-3.5 w-3.5 text-white/40" />
@@ -994,6 +999,13 @@ export default function LogementDetailPage({
                     ) : (
                       <p className="text-white/50">Locataire inconnu</p>
                     )}
+                    {/* Garants / contacts du locataire — lecture seule,
+                        l'édition se fait sur sa fiche. */}
+                    {bailActif.locataire ? (
+                      <GarantsContactsLecture
+                        locataireId={bailActif.locataire.id}
+                      />
+                    ) : null}
                     <dl className="space-y-1.5">
                       <Row
                         label="Loyer"

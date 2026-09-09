@@ -30,6 +30,10 @@ type Locataire = {
   immeuble_name?: string | null;
   logement_id?: number | null;
   logement_numero?: string | null;
+  /** Pourquoi la fiche remonte quand ce n'est PAS son nom qui matche
+   *  (« garant : Jacques Roy », « courriel : … ») — retour Phil
+   *  2026-09-09, point 8 : chercher Jacques doit montrer Sébastien. */
+  match_via?: string | null;
 };
 
 type ImmeubleLite = {
@@ -222,7 +226,7 @@ export default function LocatairesPage() {
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Recherche par nom…"
+              placeholder="Recherche nom / garant / courriel / téléphone…"
               className="input w-full pl-9"
             />
           </div>
@@ -303,8 +307,18 @@ export default function LocatairesPage() {
                         <div className="flex h-8 w-8 items-center justify-center rounded-full bg-accent-500/15 text-accent-500">
                           <User className="h-4 w-4" />
                         </div>
-                        <span className="font-bold text-white group-hover:text-accent-500">
-                          {l.full_name}
+                        <span className="min-w-0">
+                          <span className="block font-bold text-white group-hover:text-accent-500">
+                            {l.full_name}
+                          </span>
+                          {l.match_via ? (
+                            <span
+                              className="block text-[11px] text-amber-200"
+                              title="Cette fiche remonte parce qu'un de ses contacts (ou son courriel / téléphone) correspond à la recherche"
+                            >
+                              trouvé via {l.match_via}
+                            </span>
+                          ) : null}
                         </span>
                       </Link>
                     </td>

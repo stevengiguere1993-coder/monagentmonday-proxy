@@ -7,6 +7,8 @@ from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.models.immobilier import CONTACT_ROLES, TAL_MOTIFS, TAL_STATUTS
+
 
 # ─── Immeuble ──────────────────────────────────────────────────────────
 
@@ -229,6 +231,158 @@ class LocataireListItem(LocataireRead):
     immeuble_name: Optional[str] = None
     logement_id: Optional[int] = None
     logement_numero: Optional[str] = None
+    #: Ce qui a fait matcher la recherche quand ce n'est PAS le nom du
+    #: locataire (ex. « garant : Jacques Roy », « courriel », « téléphone »)
+    #: — retour Phil 2026-09-09 : « quand je cherche Jacques, je vois
+    #: Sébastien ». None quand le nom lui-même correspond.
+    match_via: Optional[str] = None
+
+
+# ─── Garants & contacts d'un locataire (2026-09-09) ─────────────────────
+
+
+def _valider_role(v: str) -> str:
+    r = (v or "garant").strip().lower()
+    if r not in CONTACT_ROLES:
+        raise ValueError(
+            "Rôle invalide — attendu : " + ", ".join(CONTACT_ROLES) + "."
+        )
+    return r
+
+
+class LocataireContactBase(BaseModel):
+    #: garant | colocataire | occupant | urgence
+    role: str = "garant"
+    full_name: str = Field(..., min_length=1, max_length=255)
+    email: Optional[str] = Field(default=None, max_length=320)
+    phone: Optional[str] = Field(default=None, max_length=50)
+    #: Lien avec le locataire (« père », « conjointe »…).
+    relation: Optional[str] = Field(default=None, max_length=80)
+    #: C'est cette personne qui paie le loyer (virements à son nom).
+    paie_le_loyer: bool = False
+    notes: Optional[str] = None
+    actif: bool = True
+
+    @field_validator("role")
+    @classmethod
+    def _check_role(cls, v: str) -> str:
+        return _valider_role(v)
+
+
+class LocataireContactCreate(LocataireContactBase):
+    pass
+
+
+class LocataireContactUpdate(BaseModel):
+    role: Optional[str] = None
+    full_name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    email: Optional[str] = Field(default=None, max_length=320)
+    phone: Optional[str] = Field(default=None, max_length=50)
+    relation: Optional[str] = Field(default=None, max_length=80)
+    paie_le_loyer: Optional[bool] = None
+    notes: Optional[str] = None
+    actif: Optional[bool] = None
+
+    @field_validator("role")
+    @classmethod
+    def _check_role(cls, v: Optional[str]) -> Optional[str]:
+        return None if v is None else _valider_role(v)
+
+
+class LocataireContactRead(LocataireContactBase):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    locataire_id: int
+    created_by_email: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+# ─── Dossier TAL (2026-09-09) ────────────────────────────────────────────
+
+
+def _valider_motif(v: str) -> str:
+    m = (v or "non_paiement").strip().lower()
+    if m not in TAL_MOTIFS:
+        raise ValueError(
+            "Motif invalide — attendu : " + ", ".join(TAL_MOTIFS) + "."
+        )
+    return m
+
+
+def _valider_statut_tal(v: str) -> str:
+    st = (v or "ouvert").strip().lower()
+    if st not in TAL_STATUTS:
+        raise ValueError(
+            "Statut invalide — attendu : " + ", ".join(TAL_STATUTS) + "."
+        )
+    return st
+
+
+class TalDossierCreate(BaseModel):
+    motif: str = "non_paiement"
+    statut: str = "ouvert"
+    numero_dossier: Optional[str] = Field(default=None, max_length=64)
+    #: Défaut : aujourd'hui (posé côté serveur).
+    ouvert_le: Optional[date] = None
+    audience_le: Optional[date] = None
+    decision_le: Optional[date] = None
+    notes: Optional[str] = None
+
+    @field_validator("motif")
+    @classmethod
+    def _check_motif(cls, v: str) -> str:
+        return _valider_motif(v)
+
+    @field_validator("statut")
+    @classmethod
+    def _check_statut(cls, v: str) -> str:
+        return _valider_statut_tal(v)
+
+
+class TalDossierUpdate(BaseModel):
+    motif: Optional[str] = None
+    statut: Optional[str] = None
+    numero_dossier: Optional[str] = Field(default=None, max_length=64)
+    ouvert_le: Optional[date] = None
+    audience_le: Optional[date] = None
+    decision_le: Optional[date] = None
+    notes: Optional[str] = None
+
+    @field_validator("motif")
+    @classmethod
+    def _check_motif(cls, v: Optional[str]) -> Optional[str]:
+        return None if v is None else _valider_motif(v)
+
+    @field_validator("statut")
+    @classmethod
+    def _check_statut(cls, v: Optional[str]) -> Optional[str]:
+        return None if v is None else _valider_statut_tal(v)
+
+
+class TalDossierRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    bail_id: int
+    locataire_id: Optional[int] = None
+    logement_id: Optional[int] = None
+    immeuble_id: Optional[int] = None
+    motif: str
+    statut: str
+    numero_dossier: Optional[str] = None
+    ouvert_le: Optional[date] = None
+    audience_le: Optional[date] = None
+    decision_le: Optional[date] = None
+    notes: Optional[str] = None
+    created_by_email: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    #: Enrichissements d'affichage (fiche locataire : « Immeuble · 3 »).
+    locataire_name: Optional[str] = None
+    immeuble_name: Optional[str] = None
+    logement_numero: Optional[str] = None
+    #: Nombre de pièces rattachées (liste) — le détail les renvoie.
+    nb_documents: int = 0
 
 
 # ─── Bail ───────────────────────────────────────────────────────────────
