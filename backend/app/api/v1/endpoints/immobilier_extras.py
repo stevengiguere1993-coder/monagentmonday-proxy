@@ -1150,11 +1150,10 @@ async def annuler_depart(
     croire à une action. L'action utile à ce moment-là est l'INVERSE :
     revenir en arrière parce que le locataire a changé d'idée.
 
-    Garde-fou : dès qu'un CANDIDAT est retenu pour la suite, annuler
-    n'est plus anodin — on aurait deux locataires sur le même logement.
-    Le refus est explicite et dit quoi faire (repasser le dossier de
-    relocation à « annulé » depuis la page Locations, ce qui oblige à
-    régler d'abord le sort du candidat).
+    Garde-fou : dès qu'un LOCATAIRE est lié pour la suite (bail en
+    signature), annuler n'est plus anodin — on aurait deux locataires
+    sur le même logement. Le refus est explicite et dit quoi faire
+    (retirer le locataire, puis annuler le dossier de relocation).
     """
     _require_volet(user)
     bail = await db.get(Bail, bail_id)
@@ -1174,18 +1173,18 @@ async def annuler_depart(
         )
 
     engages = (
-        LocationDossierStatut.CANDIDAT_RETENU.value,
-        LocationDossierStatut.BAIL_A_ENVOYER.value,
         LocationDossierStatut.BAIL_ENVOYE.value,
+        "bail_a_envoyer",  # ancienne étape, avant migration
+        "candidat_retenu",
     )
     if dossier.statut in engages or dossier.nouveau_bail_id is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                "Un candidat est déjà retenu pour ce logement — annuler "
-                "le départ mettrait deux locataires sur la même unité. "
-                "Règle d'abord le sort du candidat dans la page "
-                "Locations, puis annule le dossier de relocation."
+                "Un locataire est déjà lié à ce logement (bail en "
+                "signature) — annuler le départ mettrait deux locataires "
+                "sur la même unité. Retire d'abord le locataire dans la "
+                "page Locations, puis annule le dossier de relocation."
             ),
         )
 

@@ -66,25 +66,28 @@ export type SuiviBailRow = {
 
 // Mêmes étapes que le kanban Locations — même donnée, changer ici
 // change là-bas (et vice-versa).
+// Location SIMPLIFIÉE (2026-09-09) : quatre étapes. Les anciennes
+// valeurs (visites, candidat_retenu, bail_a_envoyer) sont traduites
+// côté serveur ; on garde un libellé de repli au cas où.
 export const KANBAN_STATUTS: Array<{ id: string; label: string }> = [
-  { id: "avis_recu", label: "Départ confirmé" },
-  { id: "annonce_publiee", label: "Annonce publiée" },
-  { id: "visites", label: "Visite prévue" },
-  { id: "candidat_retenu", label: "Candidat retenu" },
-  { id: "bail_a_envoyer", label: "Bail à envoyer" },
-  { id: "bail_envoye", label: "Bail envoyé — à signer" },
-  { id: "reloue", label: "Reloué" }
+  { id: "avis_recu", label: "À louer" },
+  { id: "annonce_publiee", label: "Affiché" },
+  { id: "bail_envoye", label: "Bail en signature" },
+  { id: "reloue", label: "Reloué" },
+  { id: "visites", label: "Affiché" },
+  { id: "candidat_retenu", label: "Affiché" },
+  { id: "bail_a_envoyer", label: "Bail en signature" }
 ];
 
 // Mêmes points de couleur que les colonnes du kanban Locations.
 const KANBAN_STATUT_DOT: Record<string, string> = {
   avis_recu: "bg-amber-400",
   annonce_publiee: "bg-sky-400",
-  visites: "bg-violet-400",
-  candidat_retenu: "bg-blue-400",
-  bail_a_envoyer: "bg-orange-400",
   bail_envoye: "bg-fuchsia-400",
-  reloue: "bg-emerald-400"
+  reloue: "bg-emerald-400",
+  visites: "bg-sky-400",
+  candidat_retenu: "bg-sky-400",
+  bail_a_envoyer: "bg-fuchsia-400"
 };
 
 /** Pastille LECTURE SEULE du statut de relocation + lien vers la

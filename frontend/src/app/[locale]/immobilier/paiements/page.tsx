@@ -199,8 +199,8 @@ type Overview = {
 };
 
 const RELOC_LABEL: Record<string, string> = {
-  bail_a_envoyer: "bail à envoyer",
-  bail_envoye: "bail envoyé — à signer",
+  bail_a_envoyer: "bail en signature",
+  bail_envoye: "bail en signature",
   a_venir: "à venir"
 };
 

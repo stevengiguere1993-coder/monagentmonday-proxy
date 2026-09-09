@@ -55,6 +55,25 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+#: Types de documents NORMALISÉS proposés dans les menus d'import
+#: (retour Phil 2026-09-09 : à la création d'un locataire, le gestionnaire
+#: veut déposer PLUSIEURS pièces — règlements de l'immeuble, assurance…,
+#: pas seulement le bail). Miroir TS : ``IMM_DOC_TYPES`` dans
+#: frontend/src/components/immobilier/doc-types.ts — garder les deux
+#: listes alignées. ``/documents/import`` accepte toujours un ``type``
+#: hors liste (rétro-compat : releve31, dpa, avis générés…) : la liste
+#: sert aux menus, pas à valider.
+IMM_DOC_TYPES: list[tuple[str, str]] = [
+    ("bail", "Bail"),
+    ("reglement_immeuble", "Règlements de l'immeuble"),
+    ("assurance", "Preuve d'assurance"),
+    ("enquete_credit", "Enquête de crédit / références"),
+    ("piece_identite", "Pièce d'identité"),
+    ("autre", "Autre"),
+]
+IMM_DOC_TYPE_LABELS: dict[str, str] = dict(IMM_DOC_TYPES)
+
+
 class DocumentRead(BaseModel):
     id: int
     bail_id: Optional[int]
@@ -767,6 +786,13 @@ async def import_document(
 ) -> DocumentRead:
     """Dépose un document au dossier (bouton « Importer » des sections
     Documents). Aucun envoi, aucune signature : c'est une pièce classée.
+
+    ``type`` : idéalement une clé de ``IMM_DOC_TYPES`` (menus du front) ;
+    une valeur hors liste est CONSERVÉE telle quelle (rétro-compat).
+    ⚠️ Un PDF de type « bail » rattaché à un BAIL doit passer par
+    ``POST /baux/{id}/document`` (c'est lui qui pose ``bail.document_id``
+    et active le bail) — ici, un « bail » n'est qu'une pièce au dossier
+    du locataire, à joindre plus tard via « Joindre le bail signé ».
 
     ``tal_dossier_id`` (2026-09-09) : la pièce est rattachée au dossier
     TAL ET, par lui, au bail / locataire / logement du dossier — PAS de

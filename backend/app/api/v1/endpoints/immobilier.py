@@ -2537,7 +2537,10 @@ async def _relocation_par_bail(
     if not ids:
         return {}
     from app.models.immobilier import LocationDossier
-    from app.services.locatif_depart import DOSSIER_STATUTS_REGLES
+    from app.services.locatif_depart import (
+        DOSSIER_STATUTS_REGLES,
+        normaliser_statut_location,
+    )
 
     out: dict = {}
     if inclure_sortant:
@@ -2551,7 +2554,12 @@ async def _relocation_par_bail(
                 )
             )
         ).scalars().all():
-            out[d.bail_id] = {"statut": d.statut, "dossier_id": d.id}
+            out[d.bail_id] = {
+                "statut": normaliser_statut_location(
+                    d.statut, d.nouveau_bail_id
+                ),
+                "dossier_id": d.id,
+            }
     for d in (
         await db.execute(
             select(LocationDossier).where(
@@ -2563,7 +2571,10 @@ async def _relocation_par_bail(
         )
     ).scalars().all():
         # Le lien ENTRANT garde priorité (comportement historique).
-        out[d.nouveau_bail_id] = {"statut": d.statut, "dossier_id": d.id}
+        out[d.nouveau_bail_id] = {
+            "statut": normaliser_statut_location(d.statut, d.nouveau_bail_id),
+            "dossier_id": d.id,
+        }
     return out
 
 
@@ -3936,7 +3947,7 @@ async def create_bail(
         if dossier is None:
             dossier = LocationDossier(
                 logement_id=obj.logement_id,
-                statut="bail_a_envoyer",
+                statut="bail_envoye",
                 notes=(
                     "Créé automatiquement — bail préparé depuis la "
                     "page Baux."
@@ -3946,13 +3957,8 @@ async def create_bail(
             db.add(dossier)
         if dossier.nouveau_bail_id is None:
             dossier.nouveau_bail_id = obj.id
-            if dossier.statut in (
-                "avis_recu",
-                "annonce_publiee",
-                "visites",
-                "candidat_retenu",
-            ):
-                dossier.statut = "bail_a_envoyer"
+            # Location simplifiée : un bail lié = « bail en signature ».
+            dossier.statut = "bail_envoye"
             # M9b : préparer un bail est un geste HUMAIN — un dossier
             # auto-créé (unité vacante) est pris en charge : ses frais
             # de relocation redeviennent facturables une fois reloué.
@@ -4167,7 +4173,7 @@ async def delete_bail(
             ),
         )
     # Recalages AVANT la suppression : dossier de relocation lié
-    # régressé (plus de bail = retour « candidat retenu ») et statut
+    # régressé (plus de bail = retour « à louer ») et statut
     # du logement recalculé.
     from app.models.immobilier import LocationDossier
 
@@ -4179,7 +4185,7 @@ async def delete_bail(
         )
     ).scalars().all():
         if dsr.statut in ("bail_a_envoyer", "bail_envoye", "reloue"):
-            dsr.statut = "candidat_retenu"
+            dsr.statut = "avis_recu"
         dsr.reloue_le = None
         dsr.updated_at = _now()
     # M6 (audit 2026-08-13) : un dossier dont ce bail est le SORTANT
