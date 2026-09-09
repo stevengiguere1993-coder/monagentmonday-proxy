@@ -141,6 +141,22 @@ function fmtDate(d: string | null | undefined): string {
   return d.slice(0, 10);
 }
 
+//: « 1er juil. », « 15 sept. » — la date courte des cartes compactes.
+//: L'année n'apparaît que si ce n'est pas l'année en cours (une carte
+//: « Reloué » de l'an passé ne doit pas passer pour un départ proche).
+function fmtDateCourte(d: string | null | undefined): string {
+  if (!d) return "—";
+  const [a, m, j] = d.slice(0, 10).split("-").map(Number);
+  if (!a || !m || !j) return d.slice(0, 10);
+  const mois = new Date(a, m - 1, j).toLocaleDateString("fr-CA", {
+    month: "short"
+  });
+  const jour = j === 1 ? "1er" : String(j);
+  return a === new Date().getFullYear()
+    ? `${jour} ${mois}`
+    : `${jour} ${mois} ${a}`;
+}
+
 function fmtDateTime(d: string | null | undefined): string {
   if (!d) return "À planifier";
   return new Date(d).toLocaleString("fr-CA", {
@@ -360,7 +376,7 @@ export function LocationsBoard({
           <Loader2 className="h-3.5 w-3.5 animate-spin" /> Chargement…
         </div>
       ) : (
-        <div className="flex gap-4 overflow-x-auto pb-4">
+        <div className="flex gap-3 overflow-x-auto pb-4">
           {COLUMNS.map((col) => {
             const cards = byColumn[col.id] || [];
             return (
@@ -407,22 +423,27 @@ export function LocationsBoard({
                   }
                   void patchDossier(id, { statut: col.id });
                 }}
-                className={`flex w-72 min-w-[288px] flex-shrink-0 flex-col rounded-xl border bg-brand-900/60 transition ${
+                className={`flex w-60 min-w-[240px] flex-shrink-0 flex-col rounded-xl border bg-brand-900/60 transition ${
                   dragOverCol === col.id
                     ? "border-accent-500"
                     : "border-brand-800"
                 }`}
               >
-                <div className="flex items-center justify-between border-b border-brand-800 px-4 py-3">
-                  <div className="flex items-center gap-2">
-                    <span className={`h-2 w-2 rounded-full ${col.dot}`} />
-                    <h3 className="text-sm font-semibold text-white">
+                <div className="flex items-center justify-between border-b border-brand-800 px-3 py-2">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className={`h-2 w-2 shrink-0 rounded-full ${col.dot}`} />
+                    <h3
+                      className="truncate text-sm font-semibold text-white"
+                      title={col.label}
+                    >
                       {col.label}
                     </h3>
                   </div>
-                  <span className="badge badge-neutral">{cards.length}</span>
+                  <span className="badge badge-neutral shrink-0">
+                    {cards.length}
+                  </span>
                 </div>
-                <div className="flex-1 space-y-3 p-3">
+                <div className="flex-1 space-y-1.5 p-2">
                   {cards.length === 0 ? (
                     <p className="py-6 text-center text-xs text-white/40">—</p>
                   ) : (
@@ -588,6 +609,28 @@ function DossierCard({
     d.loyer_demande != null && d.loyer_ancien != null && d.loyer_ancien > 0
       ? ((d.loyer_demande - d.loyer_ancien) / d.loyer_ancien) * 100
       : null;
+  const afficherDelta = deltaLoyer != null && Math.abs(deltaLoyer) >= 0.5;
+
+  //: Carte COMPACTE : une seule ligne « Logement 4 · 1 250 $ · 1er juil. »
+  //: (tronquée) ; le détail complet — immeuble, locataire sortant, dates
+  //: longues, ancien loyer — vit dans le title, la fiche s'ouvre au clic.
+  const dateCarte = d.statut === "reloue" ? d.reloue_le : d.date_depart;
+  const detail = [
+    d.immeuble_name,
+    `Logement ${d.logement_numero}`,
+    d.statut === "reloue"
+      ? `Reloué le ${fmtDate(d.reloue_le)}`
+      : `Départ : ${fmtDate(d.date_depart)}`,
+    d.locataire_sortant ? `Sortant : ${d.locataire_sortant}` : "",
+    `Loyer demandé : ${money(d.loyer_demande)}${
+      d.loyer_ancien != null ? ` (ancien : ${money(d.loyer_ancien)})` : ""
+    }`
+  ]
+    .filter(Boolean)
+    .join("\n");
+  // Pied minimal : rien du tout si aucun compteur ni badge à montrer.
+  const aUnPied =
+    annoncesActives > 0 || d.visites.length > 0 || !!retenu || !!prochaine;
 
   return (
     <button
@@ -598,58 +641,62 @@ function DossierCard({
         e.dataTransfer.setData("text/plain", String(d.id))
       }
       onClick={onOpen}
-      className={`block w-full cursor-grab rounded-lg border p-3 text-left transition hover:border-accent-500 active:cursor-grabbing ${
+      title={detail}
+      className={`block w-full cursor-grab rounded-lg border p-2 text-left transition hover:border-accent-500 active:cursor-grabbing ${
         highlighted
           ? "border-accent-500 bg-accent-500/10 ring-2 ring-accent-500/60"
           : "border-brand-800 bg-brand-950"
       }`}
     >
-      <p className="truncate text-sm font-semibold text-white">
+      <p className="truncate text-xs font-semibold text-white">
         Logement {d.logement_numero}
-      </p>
-      {showImmeuble ? (
-        <p className="mt-0.5 truncate text-xs text-white/60">
-          {d.immeuble_name}
-        </p>
-      ) : null}
-      <p className="mt-1 text-xs text-white/55">
-        {d.statut === "reloue"
-          ? `Reloué le ${fmtDate(d.reloue_le)}`
-          : `Départ : ${fmtDate(d.date_depart)}`}
-        {d.locataire_sortant ? ` · ${d.locataire_sortant}` : ""}
-      </p>
-      <p className="mt-1 font-mono text-xs text-white/80">
-        {money(d.loyer_demande)}
-        {deltaLoyer != null && Math.abs(deltaLoyer) >= 0.5 ? (
+        <span className="font-normal text-white/40"> · </span>
+        <span className="font-mono font-normal text-white/80">
+          {money(d.loyer_demande)}
+        </span>
+        {afficherDelta ? (
           <span
-            className={deltaLoyer > 0 ? "text-emerald-300" : "text-rose-300"}
+            className={`font-normal ${deltaLoyer > 0 ? "text-emerald-300" : "text-rose-300"}`}
           >
             {" "}
-            ({deltaLoyer > 0 ? "+" : ""}
-            {deltaLoyer.toFixed(0)} %)
+            {deltaLoyer > 0 ? "+" : ""}
+            {deltaLoyer.toFixed(0)} %
           </span>
         ) : null}
+        <span className="font-normal text-white/40"> · </span>
+        <span className="font-normal text-white/60">
+          {fmtDateCourte(dateCarte)}
+        </span>
       </p>
-      <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px] text-white/50">
-        <span title="Annonces actives">
-          <Megaphone className="mr-0.5 inline h-3 w-3" />
-          {annoncesActives}
-        </span>
-        <span title="Visites / candidats">
-          <Users className="mr-0.5 inline h-3 w-3" />
-          {d.visites.length}
-        </span>
-        {retenu ? (
-          <span className="badge badge-blue">
-            <Star className="mr-0.5 inline h-2.5 w-2.5" />
-            {retenu.candidat_nom}
-          </span>
-        ) : prochaine ? (
-          <span className="badge badge-violet">
-            {fmtDateTime(prochaine.quand)}
-          </span>
-        ) : null}
-      </div>
+      {showImmeuble ? (
+        <p className="truncate text-[11px] text-white/50">{d.immeuble_name}</p>
+      ) : null}
+      {aUnPied ? (
+        <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-white/50">
+          {annoncesActives > 0 ? (
+            <span title="Annonces actives">
+              <Megaphone className="mr-0.5 inline h-3 w-3" />
+              {annoncesActives}
+            </span>
+          ) : null}
+          {d.visites.length > 0 ? (
+            <span title="Visites / candidats">
+              <Users className="mr-0.5 inline h-3 w-3" />
+              {d.visites.length}
+            </span>
+          ) : null}
+          {retenu ? (
+            <span className="badge badge-blue max-w-full">
+              <Star className="mr-0.5 inline h-2.5 w-2.5 shrink-0" />
+              <span className="min-w-0 truncate">{retenu.candidat_nom}</span>
+            </span>
+          ) : prochaine ? (
+            <span className="badge badge-violet">
+              {fmtDateTime(prochaine.quand)}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
     </button>
   );
 }

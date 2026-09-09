@@ -30,11 +30,13 @@ import { ImmobilierTopbar } from "../layout";
  * Communications (gestion locative) — retour Phil 2026-07-27.
  *
  * Tout ce qui PART vers les locataires sans exiger de signature :
- * 1. À QUI — immeubles entiers et/ou locataires précis (l'envoi reste
- *    UN courriel individualisé par locataire, jamais de liste visible).
- *    Les immeubles en GESTION EXTERNE sont exclus par défaut (retour
- *    Phil 2026-08-13 : « comment ça le 1-3-5 Elgin y apparaît ? ») —
- *    une case les ramène quand l'avis vient quand même de nous.
+ * 1. À QUI — sélection PAR LOCATAIRE, immeuble par immeuble : la case
+ *    d'un immeuble est tri-état (tous / partiel / aucun) et coche ses
+ *    locataires d'un coup ; un filtre (nom, courriel, logement,
+ *    immeuble) réduit et déplie la liste. L'envoi reste UN courriel
+ *    individualisé par locataire, jamais de liste visible.
+ *    Les immeubles en GESTION EXTERNE ne sont jamais listés (retour
+ *    Phil 2026-08-13 : « comment ça le 1-3-5 Elgin y apparaît ? »).
  * 2. QUOI — avis « modèle courriel » (rappel de paiement, avis d'accès,
  *    demande d'assurance) ou message libre. Le relevé 31 reste dans
  *    Suivis annuels ; les avis TAL à signature restent dans Documents.
@@ -161,6 +163,19 @@ function typeLabel(t: string): string {
   return TYPES_HISTORIQUE.find((x) => x.value === t)?.label || t;
 }
 
+//: Miroir du plafond backend (`_MAX_DESTINATAIRES`) : on prévient AVANT
+//: d'envoyer plutôt que de laisser le serveur refuser d'un bloc.
+const MAX_DESTINATAIRES = 500;
+
+//: Filtre sans accents ni casse (« tremblay » trouve « Tremblay »,
+//: « elgin » trouve « Élgin »).
+function normaliser(s: string | null | undefined): string {
+  return (s || "")
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLowerCase();
+}
+
 function fmtDate(iso?: string | null): string {
   if (!iso) return "—";
   return new Date(iso).toLocaleString("fr-CA", {
@@ -223,14 +238,15 @@ export default function CommunicationsPage() {
   const [blocs, setBlocs] = useState<ImmeubleBloc[] | null>(null);
   const [reglages, setReglages] = useState<Reglages | null>(null);
 
-  // À qui
-  const [immSel, setImmSel] = useState<Set<number>>(new Set());
+  // À qui — la sélection est PAR LOCATAIRE (locSel) ; la case d'un
+  // immeuble n'est qu'un raccourci tri-état sur ses locataires, et
+  // l'envoi ne vise jamais « un immeuble » mais la liste des cochés.
   const [locSel, setLocSel] = useState<Map<number, Destinataire>>(new Map());
+  // Filtre de la liste (nom, courriel, logement, immeuble).
   const [rechLoc, setRechLoc] = useState("");
   const [immOuverts, setImmOuverts] = useState<Set<number>>(new Set());
-  // Gestion externe : masquée par défaut (c'est le gestionnaire tiers
-  // qui parle à ses locataires). La case la ramène — et le drapeau part
-  // avec l'envoi pour que le backend applique la même règle.
+  // Gestion externe : jamais listée (c'est le gestionnaire tiers qui
+  // parle à ses locataires) — le backend applique la même règle.
 
   // Quoi
   const [type, setType] = useState<string>("rappel_paiement");
@@ -314,16 +330,14 @@ export default function CommunicationsPage() {
   }, []);
 
   // Filet : la gestion externe est TOUJOURS hors liste (décision Phil
-  // 2026-08-19). Si une sélection en mémoire vise un immeuble devenu
+  // 2026-08-19). Si une sélection en mémoire vise un locataire devenu
   // invisible, elle part avec lui — sinon on enverrait à des gens que
   // l'écran ne montre plus (le backend les filtrerait de toute façon).
   useEffect(() => {
     if (!blocs) return;
-    const visibles = new Set(blocs.map((b) => b.immeuble_id));
     const locVisibles = new Set(
       blocs.flatMap((b) => b.locataires.map((l) => l.locataire_id))
     );
-    setImmSel((prev) => new Set([...prev].filter((id) => visibles.has(id))));
     setLocSel((prev) => {
       const next = new Map(prev);
       for (const id of prev.keys())
@@ -352,57 +366,112 @@ export default function CommunicationsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [blocs]);
 
-  // Destinataires effectifs = locataires des immeubles cochés ∪ chips.
+  // Destinataires effectifs = les locataires cochés, dans l'ordre de la
+  // liste (immeuble puis logement) pour que les puces suivent l'écran.
   const effectifs = useMemo(() => {
-    const map = new Map<number, Destinataire & { immeuble: string }>();
-    for (const b of blocs || []) {
-      if (!immSel.has(b.immeuble_id)) continue;
-      for (const l of b.locataires) {
-        map.set(l.locataire_id, { ...l, immeuble: b.immeuble_name });
-      }
-    }
-    for (const [id, l] of locSel) {
-      if (!map.has(id)) {
-        const b = (blocs || []).find((x) =>
-          x.locataires.some((y) => y.locataire_id === id)
-        );
-        map.set(id, { ...l, immeuble: b?.immeuble_name || "" });
-      }
-    }
-    return Array.from(map.values());
-  }, [blocs, immSel, locSel]);
-
-  const sansEmail = effectifs.filter((l) => !l.email).length;
-
-  const resultatsRecherche = useMemo(() => {
-    const q = rechLoc.trim().toLowerCase();
-    if (!q) return [];
     const out: (Destinataire & { immeuble: string })[] = [];
+    const vus = new Set<number>();
     for (const b of blocs || []) {
       for (const l of b.locataires) {
-        if (locSel.has(l.locataire_id)) continue;
-        if (l.nom.toLowerCase().includes(q)) {
-          out.push({ ...l, immeuble: b.immeuble_name });
-          if (out.length >= 8) return out;
-        }
+        if (!locSel.has(l.locataire_id)) continue;
+        out.push({ ...l, immeuble: b.immeuble_name });
+        vus.add(l.locataire_id);
       }
+    }
+    // Filet : un coché absent de la liste (le filet ci-dessus le purge
+    // normalement) reste visible plutôt que de disparaître en silence.
+    for (const [id, l] of locSel) {
+      if (!vus.has(id)) out.push({ ...l, immeuble: "" });
     }
     return out;
-  }, [rechLoc, blocs, locSel]);
+  }, [blocs, locSel]);
 
-  const toggleImm = (id: number) => {
-    setImmSel((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+  const sansEmail = effectifs.filter((l) => !l.email).length;
+  const tropDeDestinataires = effectifs.length > MAX_DESTINATAIRES;
+
+  // Filtre : réduit la liste aux locataires dont le nom, le courriel, le
+  // numéro de logement OU l'immeuble contient le texte (accents ignorés).
+  // Un immeuble qui matche par son nom garde tous ses locataires.
+  const filtre = normaliser(rechLoc.trim());
+  const blocsVisibles = useMemo(() => {
+    if (!blocs) return [];
+    if (!filtre) return blocs;
+    const out: ImmeubleBloc[] = [];
+    for (const b of blocs) {
+      if (normaliser(b.immeuble_name).includes(filtre)) {
+        out.push(b);
+        continue;
+      }
+      const locataires = b.locataires.filter(
+        (l) =>
+          normaliser(l.nom).includes(filtre) ||
+          normaliser(l.email).includes(filtre) ||
+          normaliser(l.logement).includes(filtre)
+      );
+      if (locataires.length > 0) out.push({ ...b, locataires });
+    }
+    return out;
+  }, [blocs, filtre]);
+
+  // Locataires actuellement AFFICHÉS (filtre compris) — ce sur quoi
+  // agissent « Tous les locataires » et les cases d'immeuble.
+  const locVisibles = useMemo(
+    () => blocsVisibles.flatMap((b) => b.locataires),
+    [blocsVisibles]
+  );
+  const visiblesTousCoches =
+    locVisibles.length > 0 &&
+    locVisibles.every((l) => locSel.has(l.locataire_id));
+
+  // « n cochés / m locataires » par immeuble, sur le bloc COMPLET
+  // (filtre ou pas) — pilote la case tri-état et le compteur.
+  const statParImm = useMemo(() => {
+    const m = new Map<number, { n: number; m: number }>();
+    for (const b of blocs || []) {
+      m.set(b.immeuble_id, {
+        n: b.locataires.filter((l) => locSel.has(l.locataire_id)).length,
+        m: b.locataires.length
+      });
+    }
+    return m;
+  }, [blocs, locSel]);
+
+  const toggleLoc = (l: Destinataire) => {
+    setLocSel((prev) => {
+      const next = new Map(prev);
+      if (next.has(l.locataire_id)) next.delete(l.locataire_id);
+      else next.set(l.locataire_id, l);
       return next;
     });
   };
 
+  //: Coche ou décoche d'un coup une liste de locataires (case d'immeuble,
+  //: « Tout / Aucun » d'un bloc, « Tous les locataires »).
+  const cocherLocataires = (liste: Destinataire[], cocher: boolean) => {
+    setLocSel((prev) => {
+      const next = new Map(prev);
+      for (const l of liste) {
+        if (cocher) next.set(l.locataire_id, l);
+        else next.delete(l.locataire_id);
+      }
+      return next;
+    });
+  };
+
+  //: Case d'immeuble : agit sur les locataires AFFICHÉS du bloc (tous
+  //: sans filtre, les seuls correspondants avec). Tous déjà cochés → on
+  //: décoche ; sinon on coche le reste.
+  const toggleImm = (b: ImmeubleBloc) => {
+    const tousCoches =
+      b.locataires.length > 0 &&
+      b.locataires.every((l) => locSel.has(l.locataire_id));
+    cocherLocataires(b.locataires, !tousCoches);
+  };
+
+  //: « Tous les locataires » suit ce que la liste montre (filtre
+  //: compris) ; tous déjà cochés → on décoche.
   const toutCocher = () => {
-    if (!blocs) return;
-    if (immSel.size === blocs.length) setImmSel(new Set());
-    else setImmSel(new Set(blocs.map((b) => b.immeuble_id)));
+    cocherLocataires(locVisibles, !visiblesTousCoches);
   };
 
   const profils = reglages?.profils || [];
@@ -506,7 +575,13 @@ export default function CommunicationsPage() {
     setResultat(null);
     const nb = effectifs.length - sansEmail;
     if (effectifs.length === 0) {
-      setErr("Choisis au moins un immeuble ou un locataire.");
+      setErr("Coche au moins un locataire (ou un immeuble entier).");
+      return;
+    }
+    if (tropDeDestinataires) {
+      setErr(
+        `Trop de destinataires (${effectifs.length}) — maximum ${MAX_DESTINATAIRES} par envoi. Réduis la sélection ou envoie en plusieurs fois.`
+      );
       return;
     }
     if (type === "libre" && (!sujet.trim() || !corps.trim())) {
@@ -540,8 +615,11 @@ export default function CommunicationsPage() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             type,
-            immeuble_ids: Array.from(immSel),
-            locataire_ids: Array.from(locSel.keys()),
+            // Miroir exact de la liste : on n'envoie jamais « à un
+            // immeuble », seulement aux locataires cochés (l'immeuble
+            // n'est qu'un raccourci de sélection à l'écran).
+            immeuble_ids: [],
+            locataire_ids: effectifs.map((l) => l.locataire_id),
             sujet: type === "libre" ? sujet : undefined,
             corps: type === "libre" ? corps : undefined,
             mois: type === "rappel_paiement" ? `${mois}-01` : undefined,
@@ -552,9 +630,7 @@ export default function CommunicationsPage() {
               type === "avis_acces" ? accesMotif || undefined : undefined,
             // Profil sélectionné (défaut si non modifié) — le backend
             // retombe sur le profil par défaut si vide.
-            profil: profilSel || undefined,
-            // Miroir de la case : l'envoi vise exactement ce que le
-            // sélecteur montrait.
+            profil: profilSel || undefined
           })
         }
       );
@@ -565,8 +641,8 @@ export default function CommunicationsPage() {
       setResultat(d as EnvoiResultat);
       // Envoi parti → on remet la page à neuf (à qui, quoi) ; le
       // résumé vert reste affiché et le « De qui » est conservé.
-      setImmSel(new Set());
       setLocSel(new Map());
+      setRechLoc("");
       setType("rappel_paiement");
       setSujet("");
       setCorps(TEMPLATE_LIBRE);
@@ -657,10 +733,21 @@ export default function CommunicationsPage() {
                 <Users className="h-4 w-4 text-accent-500" /> À qui
               </h2>
               <div className="flex flex-wrap items-center gap-1.5">
-                <button className="btn-secondary btn-xs" onClick={toutCocher}>
-                  {blocs && immSel.size === blocs.length
+                <button
+                  className="btn-secondary btn-xs"
+                  onClick={toutCocher}
+                  disabled={locVisibles.length === 0}
+                  title={
+                    filtre
+                      ? "Agit sur les locataires affichés par le filtre"
+                      : "Coche tous les locataires de tous les immeubles"
+                  }
+                >
+                  {visiblesTousCoches
                     ? "Tout décocher"
-                    : "Tous les immeubles"}
+                    : filtre
+                      ? "Tous les résultats"
+                      : "Tous les locataires"}
                 </button>
                 <button
                   className="inline-flex items-center gap-1 rounded-lg border border-rose-500/40 bg-rose-500/10 px-2 py-1 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/20"
@@ -699,110 +786,193 @@ export default function CommunicationsPage() {
               </div>
             ) : (
               <>
-                <div className="max-h-64 space-y-1.5 overflow-y-auto pr-1">
-                  {blocs.map((b) => (
-                    <div key={b.immeuble_id}>
-                      <div className="flex items-center gap-2 rounded-lg border border-brand-800 bg-brand-950/60 px-3 py-2">
-                        <input
-                          type="checkbox"
-                          checked={immSel.has(b.immeuble_id)}
-                          onChange={() => toggleImm(b.immeuble_id)}
-                          className="h-4 w-4 shrink-0 accent-[var(--accent-500,#f59e0b)]"
-                        />
-                        <Building2 className="h-3.5 w-3.5 shrink-0 text-white/40" />
-                        <span className="min-w-0 flex-1 truncate text-sm text-white">
-                          {b.immeuble_name}
-                        </span>
-                        <span className="shrink-0 text-xs text-white/45">
-                          {b.locataires.length} loc.
-                        </span>
-                        <button
-                          className="rounded p-1 text-white/40 hover:text-white"
-                          title="Voir les locataires"
-                          onClick={() =>
-                            setImmOuverts((prev) => {
-                              const n = new Set(prev);
-                              if (n.has(b.immeuble_id)) n.delete(b.immeuble_id);
-                              else n.add(b.immeuble_id);
-                              return n;
-                            })
-                          }
-                        >
-                          <ChevronDown
-                            className={`h-3.5 w-3.5 transition ${immOuverts.has(b.immeuble_id) ? "rotate-180" : ""}`}
+                {/* Filtre de la liste — réduit ET déplie les blocs qui
+                    correspondent (nom, courriel, logement, immeuble). */}
+                <div className="relative mb-2">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-white/40" />
+                  <input
+                    value={rechLoc}
+                    onChange={(e) => setRechLoc(e.target.value)}
+                    placeholder="Filtrer : nom, courriel, logement, immeuble…"
+                    className="input w-full pl-8 pr-8 text-sm"
+                  />
+                  {rechLoc ? (
+                    <button
+                      type="button"
+                      onClick={() => setRechLoc("")}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-white/40 hover:text-white"
+                      title="Effacer le filtre"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  ) : null}
+                </div>
+
+                <div className="max-h-72 space-y-1.5 overflow-y-auto pr-1">
+                  {blocsVisibles.map((b) => {
+                    const stat = statParImm.get(b.immeuble_id) || {
+                      n: 0,
+                      m: 0
+                    };
+                    const tout = stat.m > 0 && stat.n === stat.m;
+                    const partiel = stat.n > 0 && stat.n < stat.m;
+                    // Un filtre actif déplie tout ce qui correspond.
+                    const ouvert = !!filtre || immOuverts.has(b.immeuble_id);
+                    return (
+                      <div key={b.immeuble_id}>
+                        <div className="flex items-center gap-2 rounded-lg border border-brand-800 bg-brand-950/60 px-3 py-2">
+                          {/* Tri-état : cochée = tous ses locataires,
+                              indéterminée = une partie (pas d'attribut
+                              HTML pour ça → propriété DOM via ref). */}
+                          <input
+                            type="checkbox"
+                            checked={tout}
+                            ref={(el) => {
+                              if (el) el.indeterminate = partiel;
+                            }}
+                            disabled={b.locataires.length === 0}
+                            onChange={() => toggleImm(b)}
+                            title={
+                              tout
+                                ? "Décocher tous les locataires de cet immeuble"
+                                : "Cocher tous les locataires de cet immeuble"
+                            }
+                            className="h-4 w-4 shrink-0 accent-[var(--accent-500,#f59e0b)]"
                           />
-                        </button>
-                      </div>
-                      {immOuverts.has(b.immeuble_id) ? (
-                        <div className="ml-8 mt-1 space-y-0.5">
-                          {b.locataires.map((l) => (
-                            <div
-                              key={l.locataire_id}
-                              className="flex items-center gap-2 text-xs text-white/60"
-                            >
-                              <span className="truncate">
-                                {l.logement ? `${l.logement} · ` : ""}
-                                {l.nom}
-                              </span>
-                              {!l.email && (
-                                <span className="badge badge-amber shrink-0">
-                                  sans courriel
-                                </span>
-                              )}
-                            </div>
-                          ))}
+                          <Building2 className="h-3.5 w-3.5 shrink-0 text-white/40" />
+                          <span className="min-w-0 flex-1 truncate text-sm text-white">
+                            {b.immeuble_name}
+                          </span>
+                          <span
+                            className={`shrink-0 text-xs tabular-nums ${stat.n > 0 ? "text-accent-500" : "text-white/45"}`}
+                            title={`${stat.n} locataire${stat.n > 1 ? "s" : ""} sélectionné${stat.n > 1 ? "s" : ""} sur ${stat.m}`}
+                          >
+                            {stat.n} / {stat.m}
+                          </span>
+                          <button
+                            type="button"
+                            className="rounded p-1 text-white/40 hover:text-white disabled:opacity-40"
+                            title={
+                              filtre
+                                ? "Déplié par le filtre"
+                                : "Voir les locataires"
+                            }
+                            disabled={!!filtre}
+                            onClick={() =>
+                              setImmOuverts((prev) => {
+                                const n = new Set(prev);
+                                if (n.has(b.immeuble_id))
+                                  n.delete(b.immeuble_id);
+                                else n.add(b.immeuble_id);
+                                return n;
+                              })
+                            }
+                          >
+                            <ChevronDown
+                              className={`h-3.5 w-3.5 transition ${ouvert ? "rotate-180" : ""}`}
+                            />
+                          </button>
                         </div>
-                      ) : null}
-                    </div>
-                  ))}
+                        {ouvert ? (
+                          <div className="ml-8 mt-1 space-y-0.5">
+                            <div className="flex flex-wrap items-center gap-1.5 pb-0.5 text-[10px] text-white/45">
+                              <span className="tabular-nums">
+                                {stat.n} / {stat.m} sélectionné
+                                {stat.n > 1 ? "s" : ""}
+                              </span>
+                              {filtre && b.locataires.length < stat.m ? (
+                                <span>
+                                  ({b.locataires.length} affiché
+                                  {b.locataires.length > 1 ? "s" : ""})
+                                </span>
+                              ) : null}
+                              <span className="text-white/25">·</span>
+                              <button
+                                type="button"
+                                className="font-semibold text-white/60 hover:text-white"
+                                onClick={() =>
+                                  cocherLocataires(b.locataires, true)
+                                }
+                              >
+                                Tout
+                              </button>
+                              <span className="text-white/25">/</span>
+                              <button
+                                type="button"
+                                className="font-semibold text-white/60 hover:text-white"
+                                onClick={() =>
+                                  cocherLocataires(b.locataires, false)
+                                }
+                              >
+                                Aucun
+                              </button>
+                            </div>
+                            {b.locataires.map((l) => (
+                              <label
+                                key={l.locataire_id}
+                                className="flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 text-xs text-white/70 hover:bg-brand-950/60"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={locSel.has(l.locataire_id)}
+                                  onChange={() => toggleLoc(l)}
+                                  className="h-3.5 w-3.5 shrink-0 accent-[var(--accent-500,#f59e0b)]"
+                                />
+                                <span className="min-w-0 truncate">
+                                  {l.logement ? `${l.logement} · ` : ""}
+                                  {l.nom}
+                                </span>
+                                {(l.du_mois ?? 0) > 0.005 ? (
+                                  <span
+                                    className="shrink-0 text-[10px] font-semibold text-rose-300"
+                                    title="N'a pas payé le mois courant au complet"
+                                  >
+                                    retard
+                                  </span>
+                                ) : null}
+                                {l.email ? (
+                                  <span className="ml-auto hidden min-w-0 max-w-[45%] truncate text-white/35 sm:inline">
+                                    {l.email}
+                                  </span>
+                                ) : (
+                                  <span className="badge badge-amber ml-auto shrink-0">
+                                    sans courriel
+                                  </span>
+                                )}
+                              </label>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })}
                   {blocs.length === 0 && (
                     <p className="py-4 text-center text-sm text-white/45">
                       Aucun bail actif — crée des baux d&apos;abord.
                     </p>
                   )}
-                </div>
-
-                <div className="relative mt-3">
-                  <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-white/40" />
-                  <input
-                    value={rechLoc}
-                    onChange={(e) => setRechLoc(e.target.value)}
-                    placeholder="Ajouter un locataire précis…"
-                    className="input w-full pl-8 text-sm"
-                  />
-                  {resultatsRecherche.length > 0 && (
-                    <div className="absolute z-10 mt-1 w-full rounded-lg border border-brand-800 bg-brand-950 py-1 shadow-card">
-                      {resultatsRecherche.map((l) => (
-                        <button
-                          key={l.locataire_id}
-                          className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-white hover:bg-brand-900"
-                          onClick={() => {
-                            setLocSel((prev) =>
-                              new Map(prev).set(l.locataire_id, l)
-                            );
-                            setRechLoc("");
-                          }}
-                        >
-                          <span className="truncate">{l.nom}</span>
-                          <span className="ml-auto shrink-0 text-xs text-white/45">
-                            {l.immeuble}
-                            {l.logement ? ` · ${l.logement}` : ""}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
+                  {blocs.length > 0 && blocsVisibles.length === 0 && (
+                    <p className="py-4 text-center text-sm text-white/45">
+                      Aucun locataire ne correspond à « {rechLoc.trim()} ».
+                    </p>
                   )}
                 </div>
 
-                {locSel.size > 0 && (
-                  <div className="mt-2 flex flex-wrap gap-1.5">
-                    {Array.from(locSel.values()).map((l) => (
+                {/* Puces récapitulatives = exactement les destinataires
+                    effectifs (même ordre que la liste). */}
+                {effectifs.length > 0 && (
+                  <div className="mt-2 flex max-h-24 flex-wrap gap-1.5 overflow-y-auto pr-1">
+                    {effectifs.map((l) => (
                       <span
                         key={l.locataire_id}
-                        className="badge badge-neutral inline-flex items-center gap-1"
+                        className={`badge inline-flex items-center gap-1 ${l.email ? "badge-neutral" : "badge-amber"}`}
+                        title={[l.immeuble, l.logement, l.email || "sans courriel"]
+                          .filter(Boolean)
+                          .join(" · ")}
                       >
                         {l.nom}
                         <button
+                          type="button"
                           onClick={() =>
                             setLocSel((prev) => {
                               const n = new Map(prev);
@@ -811,6 +981,7 @@ export default function CommunicationsPage() {
                             })
                           }
                           className="text-white/50 hover:text-rose-400"
+                          title="Retirer de l'envoi"
                         >
                           <X className="h-3 w-3" />
                         </button>
@@ -830,16 +1001,19 @@ export default function CommunicationsPage() {
                         {sansEmail > 1 ? "s" : ""})
                       </span>
                     )}
+                    {tropDeDestinataires && (
+                      <span className="text-rose-300">
+                        {" "}
+                        · maximum {MAX_DESTINATAIRES} par envoi
+                      </span>
+                    )}
                   </p>
-                  {immSel.size > 0 || locSel.size > 0 ? (
+                  {locSel.size > 0 ? (
                     <button
                       type="button"
                       className="inline-flex items-center gap-1 text-xs font-semibold text-white/50 transition hover:text-rose-300"
-                      onClick={() => {
-                        setImmSel(new Set());
-                        setLocSel(new Map());
-                      }}
-                      title="Désélectionner tous les immeubles et locataires"
+                      onClick={() => setLocSel(new Map())}
+                      title="Désélectionner tous les locataires"
                     >
                       <X className="h-3.5 w-3.5" />
                       Tout effacer
