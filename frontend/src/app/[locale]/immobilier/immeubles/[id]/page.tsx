@@ -5791,8 +5791,11 @@ type PaiementExtRow = {
   etat: "paye" | "partiel" | "retard" | "attente" | "aucun";
   montant: number | null;
   paye_le: string | null;
-  /** Manquant du MOIS (pas de solde cumulatif en gestion externe). */
+  /** Solde CUMULATIF dû sur l'unité (mois antérieurs compris). */
   solde_total: number;
+  solde_anterieur?: boolean;
+  /** Nom du locataire saisi sur le logement (facultatif). */
+  locataire_nom?: string | null;
 };
 
 type PaiementExtOverview = {
@@ -5851,10 +5854,30 @@ function PaiementsExternesSection({ immeubleId }: { immeubleId: number }) {
     }
   }
 
-  // 1 clic = le restant du mois (attendu − cumul déjà reçu).
+  async function renommer(row: PaiementExtRow) {
+    const v = window.prompt(
+      `Nom du locataire pour le logement ${row.logement_numero} (vide = aucun)`,
+      row.locataire_nom ?? ""
+    );
+    if (v === null) return;
+    const r = await authedFetch(
+      `/api/v1/immobilier/logements/${row.logement_id}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ locataire_externe_nom: v.trim() || null })
+      }
+    );
+    if (!r.ok) setErr("Nom non enregistré.");
+    await load();
+  }
+
+  // 1 clic = tout ce qui est dû (restant du mois + mois antérieurs —
+  // solde cumulatif, retour Phil 2026-09-09).
   async function marquerPaye(row: PaiementExtRow) {
     let montant: number;
-    if (row.loyer_attendu != null) {
+    if (row.solde_total > 0) {
+      montant = row.solde_total;
+    } else if (row.loyer_attendu != null) {
       montant =
         Math.round(
           (row.loyer_attendu - (row.montant ?? 0)) * 100
@@ -6059,7 +6082,18 @@ function PaiementsExternesSection({ immeubleId }: { immeubleId: number }) {
                     )}
                   </td>
                   <td className="py-2 pr-3">
-                    <BadgeGestionExterne />
+                    <BadgeGestionExterne
+                      nom={r.locataire_nom}
+                      onRename={() => void renommer(r)}
+                    />
+                    {r.solde_anterieur ? (
+                      <span
+                        className="ml-1 badge badge-rose"
+                        title="Un mois antérieur reste dû sur cette unité"
+                      >
+                        Solde antérieur
+                      </span>
+                    ) : null}
                   </td>
                   <td className="py-2 pr-3 font-mono text-xs">
                     <Link

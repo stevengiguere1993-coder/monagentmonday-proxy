@@ -148,6 +148,8 @@ function AssignerBailModal({
   );
   const [fin, setFin] = useState(() => finParDefaut(""));
   const [depot, setDepot] = useState("");
+  const [depotRecuLe, setDepotRecuLe] = useState("");
+  const [depotDetenteur, setDepotDetenteur] = useState("");
   // Bail TAL « Ou le ___ » : 1er du mois pour l'immense majorité.
   const [jourEcheance, setJourEcheance] = useState(JOUR_ECHEANCE_DEFAUT);
   // Statut de création UNIFIÉ (même défaut que la page Baux) : proposé
@@ -269,6 +271,8 @@ function AssignerBailModal({
           depot_garantie: depot.trim()
             ? parseFloat(depot.replace(",", "."))
             : null,
+          depot_recu_le: depotRecuLe || null,
+          depot_detenteur: depotDetenteur.trim() || null,
           jour_echeance: jourEcheance,
           status: statut,
           au_mois: indefini ? true : null
@@ -491,6 +495,28 @@ function AssignerBailModal({
               value={depot}
               onChange={(e) => setDepot(e.target.value)}
               placeholder="optionnel"
+              className="input mt-1 w-full"
+            />
+          </div>
+          <div>
+            <label className="text-xs font-medium text-white/60">
+              Dépôt reçu le
+            </label>
+            <input
+              type="date"
+              value={depotRecuLe}
+              onChange={(e) => setDepotRecuLe(e.target.value)}
+              className="input mt-1 w-full"
+            />
+          </div>
+          <div>
+            <label className="text-xs font-medium text-white/60">
+              Dépôt détenu par
+            </label>
+            <input
+              value={depotDetenteur}
+              onChange={(e) => setDepotDetenteur(e.target.value)}
+              placeholder="ex. compte en fidéicommis"
               className="input mt-1 w-full"
             />
           </div>

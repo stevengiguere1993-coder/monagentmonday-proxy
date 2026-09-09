@@ -318,6 +318,19 @@ async def declarer_depart(
     bail = await db.get(Bail, bail_id)
     if bail is None:
         return None
+    # Gestion EXTERNE (2026-09-09) : un départ = l'unité redevient
+    # vacante, rien d'autre (pas de dossier de relocation).
+    if bail.logement_id:
+        from app.services.gestion_externe import (
+            logement_est_externe,
+            rendre_vacant_externe,
+        )
+
+        if await logement_est_externe(db, bail.logement_id):
+            lg_ext = await db.get(Logement, bail.logement_id)
+            if lg_ext is not None:
+                await rendre_vacant_externe(db, lg_ext)
+            return None
     today = date.today()
     if date_depart is None:
         date_depart = bail.date_fin

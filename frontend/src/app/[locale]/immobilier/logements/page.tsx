@@ -64,9 +64,12 @@ function fmtMoney(n: number | null | undefined): string {
 function fmtJour(iso?: string | null): string {
   if (!iso) return "";
   const [y, m, d] = iso.split("-").map(Number);
+  // L'année s'affiche dès qu'elle diffère de l'année courante : « libre
+  // le 30 juin 2027 » (retour Phil 2026-09-09 sur le 3 Elgin).
   return new Date(y, (m || 1) - 1, d || 1).toLocaleDateString("fr-CA", {
     day: "numeric",
-    month: "short"
+    month: "short",
+    ...(y !== new Date().getFullYear() ? { year: "numeric" } : {})
   });
 }
 
@@ -99,6 +102,115 @@ function StatutBadge({
     );
   }
   return <span className={`badge ${t.cls}`}>{t.label}</span>;
+}
+
+type DoublonGroupe = {
+  immeuble_id: number;
+  immeuble_name: string;
+  numero: string;
+  logements: Array<{
+    id: number;
+    numero: string;
+    status: string;
+    nb_baux: number;
+    nb_paiements_externes: number;
+  }>;
+};
+
+/** Logements en double dans un même immeuble (retour Phil 2026-09-09 :
+ *  « 8906-C » trois fois). Fusion en un clic : tout ce qui est rattaché
+ *  aux doublons suit le logement conservé, rien n'est effacé. */
+function DoublonsLogementsBanner() {
+  const [groupes, setGroupes] = useState<DoublonGroupe[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const charger = useCallback(async () => {
+    try {
+      const r = await authedFetch("/api/v1/immobilier/logements/doublons");
+      if (r.ok) setGroupes((await r.json()) as DoublonGroupe[]);
+    } catch {
+      /* diagnostic seulement */
+    }
+  }, []);
+  useEffect(() => {
+    void charger();
+  }, [charger]);
+  if (!groupes || groupes.length === 0) return null;
+
+  async function fusionner(g: DoublonGroupe) {
+    const ids = g.logements.map((l) => l.id).sort((a, b) => a - b);
+    const garder = ids[0];
+    if (
+      !window.confirm(
+        `Fusionner les ${ids.length} logements « ${g.numero} » de ${g.immeuble_name} en un seul (le plus ancien, #${garder}) ? Baux, paiements et documents des doublons seront rattachés au logement conservé.`
+      )
+    )
+      return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      const r = await authedFetch("/api/v1/immobilier/logements/fusionner", {
+        method: "POST",
+        body: JSON.stringify({
+          garder_id: garder,
+          supprimer_ids: ids.filter((i) => i !== garder)
+        })
+      });
+      if (!r.ok) throw new Error((await r.text()).slice(0, 200));
+      setMsg(`« ${g.numero} » fusionné.`);
+      await charger();
+      window.setTimeout(() => window.location.reload(), 600);
+    } catch (e) {
+      setMsg(`Fusion impossible : ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mb-4 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-xs text-amber-100">
+      <p className="font-semibold">
+        {groupes.length} numéro{groupes.length > 1 ? "s" : ""} de logement en
+        double — la page Paiements les affiche plusieurs fois.
+      </p>
+      <ul className="mt-2 space-y-1.5">
+        {groupes.map((g) => (
+          <li
+            key={`${g.immeuble_id}-${g.numero}`}
+            className="flex flex-wrap items-center gap-2"
+          >
+            <span>
+              {g.immeuble_name} · <strong>{g.numero}</strong> ×
+              {g.logements.length}
+              <span className="ml-1 text-amber-200/70">
+                (
+                {g.logements
+                  .map(
+                    (l) =>
+                      `#${l.id} ${l.status}${l.nb_baux ? ` · ${l.nb_baux} bail` : ""}${
+                        l.nb_paiements_externes
+                          ? ` · ${l.nb_paiements_externes} paiement(s)`
+                          : ""
+                      }`
+                  )
+                  .join(" ; ")}
+                )
+              </span>
+            </span>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void fusionner(g)}
+              className="rounded-md border border-amber-400/60 bg-amber-500/20 px-2 py-0.5 text-[11px] font-semibold text-amber-100 hover:bg-amber-500/30 disabled:opacity-50"
+            >
+              Fusionner
+            </button>
+          </li>
+        ))}
+      </ul>
+      {msg ? <p className="mt-2 text-amber-200">{msg}</p> : null}
+    </div>
+  );
 }
 
 export default function LogementsPage() {
@@ -193,6 +305,7 @@ export default function LogementsPage() {
       />
 
       <div className="p-4 lg:p-6">
+        <DoublonsLogementsBanner />
         <header className="flex flex-wrap items-start justify-between gap-3">
           <div className="flex items-start gap-3">
             <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-500/15 text-accent-500">

@@ -118,6 +118,8 @@ type RowExterne = {
   paye_le: string | null;
   etat: string;
   solde_total: number;
+  solde_anterieur?: boolean;
+  locataire_nom?: string | null;
 };
 
 type OverviewExterne = {
@@ -152,9 +154,10 @@ function externeToRow(x: RowExterne): Row {
     logement_id: x.logement_id,
     logement_numero: x.logement_numero,
     locataire_id: null,
-    locataire_name: null,
+    // Nom facultatif saisi sur le logement (2026-09-09) — repère pour
+    // le rapport mensuel, jamais de courriel (pas de relance).
+    locataire_name: x.locataire_nom ?? null,
     locataire_phone: null,
-    // Gestion externe : aucun locataire chez nous, donc aucun courriel.
     locataire_email: null,
     libre_le: null,
     loyer_mensuel: x.loyer_mensuel,
@@ -165,6 +168,7 @@ function externeToRow(x: RowExterne): Row {
     etat: x.etat,
     frais_mois: [],
     solde_total: x.solde_total,
+    solde_anterieur: x.solde_anterieur ?? false,
     nb_relances: 0,
     derniere_relance_le: null,
     gestion_externe: true
@@ -571,12 +575,33 @@ export default function PaiementsPage() {
   }
 
   async function marquerPayeExterne(row: Row) {
+    // 1 clic = tout ce qui est dû (restant du mois + mois antérieurs —
+    // solde cumulatif, retour Phil 2026-09-09), sinon le loyer du mois.
     const restant =
       Math.round((row.loyer_mensuel - (row.montant_paye ?? 0)) * 100) / 100;
+    const solde = row.solde_total ?? 0;
     await enregistrerExterne(
       row,
-      restant > 0 ? restant : row.loyer_mensuel
+      solde > 0 ? solde : restant > 0 ? restant : row.loyer_mensuel
     );
+  }
+
+  async function renommerExterne(row: Row) {
+    if (row.logement_id == null) return;
+    const v = window.prompt(
+      `Nom du locataire pour ${row.immeuble_name} · ${row.logement_numero} (vide = aucun)`,
+      row.locataire_name ?? ""
+    );
+    if (v === null) return;
+    const r = await authedFetch(
+      `/api/v1/immobilier/logements/${row.logement_id}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ locataire_externe_nom: v.trim() || null })
+      }
+    );
+    if (!r.ok) setError("Nom non enregistré.");
+    await load();
   }
 
   async function marquerPartielExterne(row: Row) {
@@ -1030,7 +1055,10 @@ Le mois redeviendra impayé — cette action ne se défait pas.`
                             Aucun locataire
                           </span>
                         ) : r.gestion_externe ? (
-                          <BadgeGestionExterne />
+                          <BadgeGestionExterne
+                            nom={r.locataire_name}
+                            onRename={() => void renommerExterne(r)}
+                          />
                         ) : r.locataire_id != null ? (
                           <Link
                             // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1060,13 +1088,19 @@ Le mois redeviendra impayé — cette action ne se défait pas.`
                               const [y, m, d] = r.libre_le
                                 .split("-")
                                 .map(Number);
+                              // Année affichée dès qu'elle diffère de
+                              // l'année courante (« 30 juin 2027 », pas
+                              // « 30 juin » — retour Phil 2026-09-09).
                               return new Date(
                                 y,
                                 (m || 1) - 1,
                                 d || 1
                               ).toLocaleDateString("fr-CA", {
                                 day: "numeric",
-                                month: "short"
+                                month: "short",
+                                ...(y !== new Date().getFullYear()
+                                  ? { year: "numeric" }
+                                  : {})
                               });
                             })()}
                           </span>

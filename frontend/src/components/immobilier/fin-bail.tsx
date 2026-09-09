@@ -533,6 +533,8 @@ export function CreerBailModal({
   const [fin, setFin] = useState("");
   const [loyer, setLoyer] = useState("");
   const [depot, setDepot] = useState("");
+  const [depotRecuLe, setDepotRecuLe] = useState("");
+  const [depotDetenteur, setDepotDetenteur] = useState("");
   // Bail TAL « Ou le ___ » : 1er du mois pour l'immense majorité.
   const [jourEcheance, setJourEcheance] = useState(JOUR_ECHEANCE_DEFAUT);
   // Statut de création UNIFIÉ (même défaut que la page Baux) : proposé
@@ -587,6 +589,8 @@ export function CreerBailModal({
           date_fin: fin,
           loyer_mensuel: Number(loyer),
           depot_garantie: depot.trim() ? Number(depot) : null,
+          depot_recu_le: depotRecuLe || null,
+          depot_detenteur: depotDetenteur.trim() || null,
           jour_echeance: jourEcheance,
           status: statut,
           // Le flag du logement fait foi (le serveur le réimpose de
@@ -772,6 +776,24 @@ export function CreerBailModal({
                 value={depot}
                 onChange={(e) => setDepot(e.target.value)}
                 placeholder="Optionnel"
+                className={`${INPUT_CLS} mt-0.5 block w-full`}
+              />
+            </label>
+            <label className="text-[11px] font-semibold text-white/60">
+              Dépôt reçu le
+              <input
+                type="date"
+                value={depotRecuLe}
+                onChange={(e) => setDepotRecuLe(e.target.value)}
+                className={`${INPUT_CLS} mt-0.5 block w-full`}
+              />
+            </label>
+            <label className="text-[11px] font-semibold text-white/60">
+              Dépôt détenu par
+              <input
+                value={depotDetenteur}
+                onChange={(e) => setDepotDetenteur(e.target.value)}
+                placeholder="ex. compte en fidéicommis"
                 className={`${INPUT_CLS} mt-0.5 block w-full`}
               />
             </label>

@@ -787,6 +787,18 @@ async def trigger_all_daily(
     await _safe("qg-tache-recurrence", _run_qg_recurrence, details)
     await _safe("bail-renouvellement-tasks", _run_bail_renew_tasks, details)
 
+    # Locatif (retour Phil 2026-09-09 : « Maritza partie le 1er, encore
+    # là le 2 ») : le recalage des baux échus et des statuts de logement
+    # n'était déclenché qu'à la consultation de 3 pages. Il tourne
+    # maintenant chaque nuit — aucun courriel, jamais.
+    async def _run_locatif_recalage():
+        from app.services.locatif_recalage import recalage_quotidien
+
+        async with AsyncSessionLocal() as db:
+            return await recalage_quotidien(db)
+
+    await _safe("locatif-recalage", _run_locatif_recalage, details)
+
     async def _run_email_inbound():
         from app.services.email_inbound import poll_inbound_emails
 

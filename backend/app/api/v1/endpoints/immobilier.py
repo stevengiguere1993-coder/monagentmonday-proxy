@@ -66,6 +66,7 @@ from app.models.immobilier import (
     ImmeubleOwnership,
     ImmeubleType,
     Logement,
+    PaiementExterne,
     LogementStatus,
     Locataire,
     LocataireCommunication,
@@ -2231,10 +2232,30 @@ async def list_logements(
     status_code=status.HTTP_201_CREATED,
 )
 async def create_logement(
-    payload: LogementCreate, db: DBSession, user: CurrentUser
+    payload: LogementCreate, db: DBSession, user: CurrentUser,
+    force: bool = False,
 ) -> LogementRead:
     _require_volet(user)
     await _get_immeuble_or_404(db, payload.immeuble_id)
+    # Doublons (retour Phil 2026-09-09 : « 8906-C » trois fois) : même
+    # numéro (casse/espaces ignorés) dans le même immeuble → 409, sauf
+    # ?force=true après un avertissement explicite.
+    if not force:
+        cle = _cle_numero(payload.numero)
+        for lg_exist in (
+            await db.execute(
+                select(Logement).where(Logement.immeuble_id == payload.immeuble_id)
+            )
+        ).scalars().all():
+            if _cle_numero(lg_exist.numero) == cle:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"Le logement « {lg_exist.numero} » existe déjà dans cet "
+                        f"immeuble (#{lg_exist.id}). Ouvre-le au lieu d'en créer "
+                        "un deuxième."
+                    ),
+                )
     obj = Logement(**payload.model_dump())
     obj.created_at = _now()
     obj.updated_at = _now()
@@ -2242,6 +2263,165 @@ async def create_logement(
     await db.commit()
     await db.refresh(obj)
     return LogementRead.model_validate(obj)
+
+
+def _cle_numero(numero: Optional[str]) -> str:
+    """Clé de comparaison d'un numéro de logement : casse, espaces et
+    tirets ignorés (« 8906 - C », « 8906-C », « 8906 c » = le même)."""
+    return "".join(ch for ch in (numero or "").lower() if ch.isalnum())
+
+
+class LogementDoublonGroupe(BaseModel):
+    immeuble_id: int
+    immeuble_name: str
+    numero: str
+    logements: List[dict]
+
+
+class FusionLogementsRequest(BaseModel):
+    garder_id: int
+    supprimer_ids: List[int] = Field(default_factory=list, min_length=1)
+
+
+@router.get("/logements/doublons", response_model=List[LogementDoublonGroupe])
+async def logements_doublons(db: DBSession, user: CurrentUser) -> List[LogementDoublonGroupe]:
+    """Diagnostic : logements portant le même numéro dans le même
+    immeuble (retour Phil 2026-09-09). Chaque groupe liste, par
+    logement, ce qui y est rattaché — pour choisir lequel garder."""
+    _require_volet(user)
+    logements = (await db.execute(select(Logement))).scalars().all()
+    imms = {
+        i.id: i for i in (await db.execute(select(Immeuble))).scalars().all()
+    }
+    groupes: dict[tuple[int, str], list[Logement]] = {}
+    for lg in logements:
+        groupes.setdefault((lg.immeuble_id, _cle_numero(lg.numero)), []).append(lg)
+    out: List[LogementDoublonGroupe] = []
+    for (imm_id, _cle), lgs in groupes.items():
+        if len(lgs) < 2:
+            continue
+        ids = [lg.id for lg in lgs]
+        nb_baux: dict[int, int] = {}
+        for lid, cnt in (
+            await db.execute(
+                select(Bail.logement_id, func.count(Bail.id))
+                .where(Bail.logement_id.in_(ids))
+                .group_by(Bail.logement_id)
+            )
+        ).all():
+            nb_baux[int(lid)] = int(cnt)
+        nb_ext: dict[int, int] = {}
+        for lid, cnt in (
+            await db.execute(
+                select(PaiementExterne.logement_id, func.count(PaiementExterne.id))
+                .where(PaiementExterne.logement_id.in_(ids))
+                .group_by(PaiementExterne.logement_id)
+            )
+        ).all():
+            nb_ext[int(lid)] = int(cnt)
+        imm = imms.get(imm_id)
+        out.append(
+            LogementDoublonGroupe(
+                immeuble_id=imm_id,
+                immeuble_name=imm.name if imm else f"Immeuble #{imm_id}",
+                numero=lgs[0].numero,
+                logements=[
+                    {
+                        "id": lg.id,
+                        "numero": lg.numero,
+                        "status": lg.status,
+                        "loyer_demande": float(lg.loyer_demande) if lg.loyer_demande is not None else None,
+                        "nb_baux": nb_baux.get(lg.id, 0),
+                        "nb_paiements_externes": nb_ext.get(lg.id, 0),
+                        "created_at": lg.created_at.isoformat() if lg.created_at else None,
+                    }
+                    for lg in sorted(lgs, key=lambda x: x.id)
+                ],
+            )
+        )
+    out.sort(key=lambda g: (g.immeuble_name, g.numero))
+    return out
+
+
+@router.post("/logements/fusionner", response_model=LogementRead)
+async def fusionner_logements(
+    payload: FusionLogementsRequest, db: DBSession, user: CurrentUser
+) -> LogementRead:
+    """Fusionne des logements en double : tout ce qui est rattaché aux
+    doublons (baux, paiements externes, documents, dossiers de
+    relocation, relevés 31) est re-pointé sur le logement conservé, puis
+    les doublons sont supprimés. Rien n'est effacé."""
+    _require_volet(user)
+    garder = await db.get(Logement, payload.garder_id)
+    if garder is None:
+        raise HTTPException(status_code=404, detail="Logement à conserver introuvable.")
+    ids = [i for i in payload.supprimer_ids if i != payload.garder_id]
+    if not ids:
+        raise HTTPException(status_code=422, detail="Rien à fusionner.")
+    doublons = (
+        await db.execute(select(Logement).where(Logement.id.in_(ids)))
+    ).scalars().all()
+    if len(doublons) != len(set(ids)):
+        raise HTTPException(status_code=404, detail="Un des doublons est introuvable.")
+    for d in doublons:
+        if d.immeuble_id != garder.immeuble_id:
+            raise HTTPException(
+                status_code=422,
+                detail="On ne fusionne que des logements du même immeuble.",
+            )
+    from app.models.immobilier import ImmDocument, LocationDossier
+
+    for d in doublons:
+        await db.execute(
+            update(Bail).where(Bail.logement_id == d.id).values(logement_id=garder.id)
+        )
+        # Paiements externes : le mois est unique par logement → on garde
+        # la ligne du conservé si elle existe déjà.
+        existants = {
+            p.mois_couvert
+            for p in (
+                await db.execute(
+                    select(PaiementExterne).where(PaiementExterne.logement_id == garder.id)
+                )
+            ).scalars().all()
+        }
+        for p in (
+            await db.execute(
+                select(PaiementExterne).where(PaiementExterne.logement_id == d.id)
+            )
+        ).scalars().all():
+            if p.mois_couvert in existants:
+                await db.delete(p)
+            else:
+                p.logement_id = garder.id
+                existants.add(p.mois_couvert)
+        await db.execute(
+            update(ImmDocument).where(ImmDocument.logement_id == d.id).values(logement_id=garder.id)
+        )
+        await db.execute(
+            update(LocationDossier).where(LocationDossier.logement_id == d.id).values(logement_id=garder.id)
+        )
+        try:
+            from app.models.immobilier import Releve31
+
+            await db.execute(
+                update(Releve31).where(Releve31.logement_id == d.id).values(logement_id=garder.id)
+            )
+        except Exception:  # noqa: BLE001 — pas de relevé 31 dans ce déploiement
+            pass
+        # Le conservé hérite des infos manquantes.
+        if garder.loyer_demande is None and d.loyer_demande is not None:
+            garder.loyer_demande = d.loyer_demande
+        if not garder.locataire_externe_nom and d.locataire_externe_nom:
+            garder.locataire_externe_nom = d.locataire_externe_nom
+        if garder.status == LogementStatus.VACANT.value and d.status == LogementStatus.OCCUPE.value:
+            garder.status = LogementStatus.OCCUPE.value
+        await db.flush()
+        await db.delete(d)
+    garder.updated_at = _now()
+    await db.commit()
+    await db.refresh(garder)
+    return LogementRead.model_validate(garder)
 
 
 @router.patch("/logements/{logement_id}", response_model=LogementRead)
@@ -2280,11 +2460,21 @@ async def update_logement(
     # de relocation, comme toute mutation qui libère une unité (la
     # création ne vit plus dans le GET /locations/overview).
     if data.get("status") == LogementStatus.VACANT.value:
-        from app.services.locatif_depart import (
-            ouvrir_dossiers_unites_vacantes,
+        from app.services.gestion_externe import (
+            logement_est_externe,
+            rendre_vacant_externe,
         )
 
-        await ouvrir_dossiers_unites_vacantes(db, [logement_id])
+        if await logement_est_externe(db, logement_id):
+            # Gestion externe (2026-09-09) : « Départ » = vacant, nom
+            # effacé, bail résiduel terminé — rien d'autre.
+            await rendre_vacant_externe(db, obj)
+        else:
+            from app.services.locatif_depart import (
+                ouvrir_dossiers_unites_vacantes,
+            )
+
+            await ouvrir_dossiers_unites_vacantes(db, [logement_id])
     await db.commit()
     await db.refresh(obj)
     return LogementRead.model_validate(obj)
@@ -2505,6 +2695,14 @@ async def list_locataires(
                 .where(
                     Bail.locataire_id.in_([r.id for r in rows]),
                     Bail.status == BailStatus.ACTIF.value,
+                    # Un bail échu (non au mois) n'héberge plus personne
+                    # (Maritza partie le 1er, encore « là » le 2 —
+                    # retour Phil 2026-09-09).
+                    or_(
+                        Bail.au_mois.is_(True),
+                        Bail.date_fin.is_(None),
+                        Bail.date_fin >= _now().date(),
+                    ),
                 )
                 .order_by(Bail.date_debut.asc())
             )
@@ -3592,6 +3790,13 @@ async def create_bail(
     loc_obj = await db.get(Locataire, payload.locataire_id)
     if loc_obj is None:
         raise HTTPException(status_code=404, detail="Locataire introuvable.")
+    # Gestion EXTERNE (2026-09-09) : pas de bail dans Kratos — c'est
+    # par cette porte qu'un bail « actif » écrasait le loyer attendu et
+    # le statut saisis à la main sur les unités externes.
+    from app.services.gestion_externe import erreur_externe, immeuble_est_externe
+
+    if await immeuble_est_externe(db, log_obj.immeuble_id):
+        raise erreur_externe("pas de bail dans Kratos.")
     if payload.status not in {s.value for s in BailStatus}:
         raise HTTPException(
             status_code=422, detail="Statut de bail invalide."
@@ -3642,6 +3847,28 @@ async def create_bail(
 
             refleter_bail_sur_demande(log_obj, float(obj.loyer_mensuel))
         log_obj.updated_at = _now()
+        # Un bail ACTIF assigné directement REFERME le dossier de
+        # relocation du logement (2026-09-09 : sinon « libre le … »
+        # restait collé à vie — seul l'import du bail signé le faisait).
+        await db.flush()
+        from app.models.immobilier import LocationDossier
+        from app.services.locatif_depart import DOSSIER_STATUTS_REGLES
+
+        _d = (
+            await db.execute(
+                select(LocationDossier).where(
+                    LocationDossier.logement_id == obj.logement_id,
+                    LocationDossier.statut.notin_(list(DOSSIER_STATUTS_REGLES)),
+                )
+            )
+        ).scalars().first()
+        if _d is not None:
+            _d.statut = "reloue"
+            if _d.reloue_le is None:
+                _d.reloue_le = _now().date()
+            if _d.nouveau_bail_id is None:
+                _d.nouveau_bail_id = obj.id
+            _d.updated_at = _now()
     elif obj.status == BailStatus.PROPOSE.value:
         log_obj.status = LogementStatus.RESERVE.value
         log_obj.updated_at = _now()
@@ -3823,10 +4050,13 @@ async def update_bail(
     # logement — le prix de la prochaine location se décide à la
     # relocation.
     if obj.status == BailStatus.ACTIF.value and obj.loyer_mensuel is not None:
+        from app.services.gestion_externe import immeuble_est_externe
         from app.services.loyer_effectif import refleter_bail_sur_demande
 
         log_obj = await db.get(Logement, obj.logement_id)
-        if log_obj is not None:
+        if log_obj is not None and not await immeuble_est_externe(
+            db, log_obj.immeuble_id
+        ):
             refleter_bail_sur_demande(log_obj, float(obj.loyer_mensuel))
 
     await db.commit()

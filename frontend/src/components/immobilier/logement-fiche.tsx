@@ -53,6 +53,8 @@ export type LogementFicheData = {
    *  tacitement, échéance n'est pas départ. */
   libre_le?: string | null;
   notes?: string | null;
+  /** Gestion externe : nom du locataire (facultatif). */
+  locataire_externe_nom?: string | null;
 };
 
 export type LogementFicheBail = {

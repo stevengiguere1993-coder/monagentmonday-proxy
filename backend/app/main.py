@@ -251,12 +251,14 @@ async def _run_startup_tasks() -> None:
             recaler_tous_les_statuts_logements,
         )
 
+        from app.services.locatif_recalage import recalage_quotidien
+
         async with _StatutSession() as session:
-            n = await recaler_tous_les_statuts_logements(session)
+            # Recalage complet (baux échus, dossiers, statuts) — le même
+            # que le mega-cron quotidien (2026-09-09).
+            n = await recalage_quotidien(session)
             if n:
-                logger.info(
-                    "Startup backfill: %d statut(s) de logement recalé(s)", n
-                )
+                logger.info("Startup recalage locatif : %s", n)
     except Exception as exc:
         logger.warning("backfill statuts logements failed: %s", exc)
 

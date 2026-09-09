@@ -79,13 +79,34 @@ export const RENOUVELLEMENT_BADGES: Record<
 /** Pastille bleue qui remplace le nom du locataire en gestion externe :
  *  la perception est déléguée au gestionnaire, on n'a pas de locataire
  *  nominatif de notre côté (retour Phil 2026-08-13). */
-export function BadgeGestionExterne() {
+export function BadgeGestionExterne({
+  nom,
+  onRename
+}: {
+  /** Nom du locataire saisi sur le logement (retour Phil 2026-09-09 :
+   *  « Gestion externe — Nom » pour cocher payé avec le nom à côté). */
+  nom?: string | null;
+  /** Présent = crayon pour saisir / changer le nom. */
+  onRename?: () => void;
+}) {
   return (
-    <span
-      className="badge badge-sky"
-      title="Loyers perçus par la compagnie de gestion — pas de locataire nominatif chez nous"
-    >
-      Gestion externe
+    <span className="inline-flex items-center gap-1.5">
+      <span
+        className="badge badge-sky"
+        title="Loyers perçus par la compagnie de gestion — le nom sert de repère pour le rapport mensuel"
+      >
+        Gestion externe{nom ? ` — ${nom}` : ""}
+      </span>
+      {onRename ? (
+        <button
+          type="button"
+          onClick={onRename}
+          className="text-[10px] text-white/40 hover:text-accent-500"
+          title={nom ? "Changer le nom du locataire" : "Indiquer le nom du locataire"}
+        >
+          {nom ? "✎" : "+ nom"}
+        </button>
+      ) : null}
     </span>
   );
 }
