@@ -1680,8 +1680,10 @@ def compute_all(inputs: FinanceInputs, use_aph_select: bool = True) -> FinanceRe
     # PERMANENT distinct (« Intérêts balance de vente », 0 sans BV),
     # non finançable par défaut et gérable dans Paramètres comme les
     # autres postes.
+    # Retour Phil 2026-09-08 : PAS de plafond — le montant saisi est
+    # le montant retenu (s'il dépasse la mise de fonds, l'excédent
+    # couvre les frais, comme le cashback). Ses intérêts suivent.
     _bv = max(0.0, float(inputs.balance_vente_montant or 0.0))
-    _bv = min(_bv, max(0.0, _mdf_pct * inputs.prix_achat - _cashback))
     frais.interets = (
         (1 - _mdf_pct)
         * (inputs.prix_achat + _frais_fin_total)
@@ -1744,12 +1746,9 @@ def compute_all(inputs: FinanceInputs, use_aph_select: bool = True) -> FinanceRe
     # la MISE DE FONDS — le X % × prix à sortir en cash est réduit du
     # montant de la BV (jamais sous 0), le prêt B reste entier.
     # Cashback (2026-09-04/08) : reçu au notaire, il vient en déduction
-    # du cash de l'assise (% du prix) ; la BV ne peut financer que ce
-    # qui reste de l'assise.
-    balance_vente = min(
-        max(0.0, float(inputs.balance_vente_montant or 0.0)),
-        max(0.0, mdf_pct * inputs.prix_achat - _cashback),
-    )
+    # du cash de l'assise (% du prix). Balance de vente : montant saisi,
+    # sans plafond (retour Phil 2026-09-08).
+    balance_vente = max(0.0, float(inputs.balance_vente_montant or 0.0))
     mdf_preteur_b = (
         mdf_pct * inputs.prix_achat
         - _cashback
@@ -1875,21 +1874,8 @@ def compute_all(inputs: FinanceInputs, use_aph_select: bool = True) -> FinanceRe
         )
         if programme is None:
             programme = programme_auto
-        # Balance de vente PLAFONNÉE à la mise de fonds restante après
-        # cashback (le vendeur ne finance pas plus que ce qu'il reste à
-        # sortir) — même règle qu'en prêteur B. Ses intérêts suivent.
-        bv_trad = min(
-            bv_trad,
-            max(
-                0.0,
-                inputs.prix_achat
-                - achat_cols[programme].financement
-                - _cashback,
-            ),
-        )
-        bv_interets_annuels = bv_trad * float(
-            inputs.balance_vente_taux_pct or 0.0
-        )
+        # Balance de vente : montant saisi, SANS plafond (retour Phil
+        # 2026-09-08) — un excédent sur la mise de fonds couvre les frais.
 
         # ── Frais d'acquisition (pas de phase chantier) — retour Phil
         # 2026-09-04 : pas de 2e courtier/évaluateur/notaire, ni
@@ -2237,9 +2223,8 @@ def compute_all(inputs: FinanceInputs, use_aph_select: bool = True) -> FinanceRe
         h_r = max(1, int(inputs.projection_horizon_annees or 5))
         cl_r = float(inputs.croissance_loyers or 0.0)
         cd_r = float(inputs.croissance_depenses or 0.0)
-        # Balance de vente plafonnée à la mise de fonds restante.
+        # Balance de vente : montant saisi, sans plafond.
         bv_r = max(0.0, float(inputs.balance_vente_montant or 0.0))
-        bv_r = min(bv_r, max(0.0, inputs.prix_achat - pret_r - _cashback))
         bv_int_r = bv_r * float(inputs.balance_vente_taux_pct or 0.0)
 
         # Dépenses RÉELLES : la fiche + lignes libres (gazon, déneigement…).
