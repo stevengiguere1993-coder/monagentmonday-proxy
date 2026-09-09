@@ -13,18 +13,35 @@
  * Statut au choix (aligné sur la page Baux) : « proposé » par défaut
  * (suivi via le kanban Locations) ou « déjà en vigueur » (actif — le
  * logement passe « occupé » automatiquement côté serveur).
+ *
+ * Création d'un NOUVEAU locataire dans la foulée (retour Phil
+ * 2026-09-09) : une zone Documents optionnelle dépose plusieurs pièces
+ * après le bail — le fichier « Bail » passe par POST /baux/{id}/document
+ * (c'est LUI qui pose document_id et active le bail), les autres par
+ * /documents/import rattachés au locataire ET au bail.
  */
 
 import { useEffect, useMemo, useState } from "react";
 import { Loader2, Plus, Search, UserPlus, X } from "lucide-react";
 
 import { authedFetch } from "@/lib/auth";
+import type { FichierAImporter } from "@/components/immobilier/doc-types";
+import {
+  DocumentsAImporterZone,
+  importerEnSerie,
+  texteProgression,
+  type ImportResultat
+} from "@/components/immobilier/documents-a-importer";
 import {
   JOUR_ECHEANCE_DEFAUT,
   JourEcheanceField,
   LOUER_INDEFINIMENT_INFO,
   LouerIndefinimentBulle
 } from "@/components/immobilier/fin-bail";
+import {
+  importDocument,
+  uploadBailDocument
+} from "@/components/immobilier/tal-avis";
 
 type LocataireItem = {
   id: number;
@@ -159,6 +176,24 @@ function AssignerBailModal({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  // Documents déposés avec le NOUVEAU locataire (retour Phil 2026-09-09).
+  const [fichiers, setFichiers] = useState<FichierAImporter[]>([]);
+  const [progression, setProgression] = useState<{
+    fait: number;
+    total: number;
+  } | null>(null);
+  const [resultatsImport, setResultatsImport] = useState<
+    ImportResultat[] | null
+  >(null);
+  // Bail déjà créé dont des documents ont échoué : plus question d'en
+  // recréer un — on réessaie les échecs ou on ferme.
+  const [bailCree, setBailCree] = useState<{
+    id: number;
+    locataireId: number;
+  } | null>(null);
+  const enCoursImport =
+    progression != null && progression.fait < progression.total;
+
   useEffect(() => {
     if (mode === "logement") {
       void authedFetch("/api/v1/immobilier/locataires").then(async (r) => {
@@ -213,6 +248,74 @@ function AssignerBailModal({
       .filter((l) => l.full_name.toLowerCase().includes(q))
       .slice(0, 8);
   }, [rech, locataires]);
+
+  /** Dépose `liste` sur le bail fraîchement créé : le fichier « Bail »
+   *  → POST /baux/{id}/document (pose document_id, active un bail
+   *  proposé, referme la relocation) ; les autres → /documents/import
+   *  avec locataire_id ET bail_id. Séquentiel, une erreur n'arrête pas
+   *  les suivants. Vrai si tout est passé. */
+  const deposerDocuments = async (
+    bailId: number,
+    locId: number,
+    liste: FichierAImporter[]
+  ): Promise<boolean> => {
+    setBailCree({ id: bailId, locataireId: locId });
+    const res = await importerEnSerie(
+      liste,
+      (f) =>
+        f.type === "bail"
+          ? uploadBailDocument({ bailId, file: f.file, dateEntree: debut })
+          : importDocument({
+              file: f.file,
+              type: f.type,
+              locataireId: locId,
+              bailId
+            }),
+      (fait, total) => setProgression({ fait, total })
+    );
+    // On garde les « Déposé » des passes précédentes (réessai partiel).
+    setResultatsImport((prev) => [
+      ...(prev || []).filter(
+        (x) => !res.some((r) => r.fichier.key === x.fichier.key)
+      ),
+      ...res
+    ]);
+    const echecs = res.filter((r) => r.erreur).length;
+    if (echecs === 0) return true;
+    setErr(
+      `Le bail est créé, mais ${echecs} document${echecs > 1 ? "s" : ""} ` +
+        "n'ont pas pu être déposés — réessaie, ou ferme et importe-les " +
+        "depuis la fiche du locataire."
+    );
+    return false;
+  };
+
+  const reessayerEchecs = async () => {
+    if (!bailCree) return;
+    const rates = new Set(
+      (resultatsImport || []).filter((r) => r.erreur).map((r) => r.fichier.key)
+    );
+    // Les échecs + les fichiers ajoutés depuis (jamais tentés).
+    const liste = fichiers.filter(
+      (f) =>
+        rates.has(f.key) ||
+        !(resultatsImport || []).some((r) => r.fichier.key === f.key)
+    );
+    if (liste.length === 0) {
+      onDone();
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    try {
+      if (await deposerDocuments(bailCree.id, bailCree.locataireId, liste))
+        onDone();
+    } catch (e: any) {
+      setErr(e?.message || "Import impossible.");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const assigner = async () => {
     setErr(null);
@@ -283,6 +386,20 @@ function AssignerBailModal({
         throw new Error(
           (d && (d.detail || d.message)) || "Création du bail impossible."
         );
+      }
+      const bail = (await rb.json()) as { id: number };
+      if (
+        mode === "logement" &&
+        creerNouveau &&
+        cibleLocataire != null &&
+        fichiers.length > 0
+      ) {
+        const complet = await deposerDocuments(
+          bail.id,
+          cibleLocataire,
+          fichiers
+        );
+        if (!complet) return; // le bail existe ; erreurs affichées par ligne
       }
       onDone();
     } catch (e: any) {
@@ -372,8 +489,19 @@ function AssignerBailModal({
                   placeholder="Téléphone"
                   className="input w-full"
                 />
+                <div className="pt-1">
+                  <DocumentsAImporterZone
+                    fichiers={fichiers}
+                    onChange={setFichiers}
+                    disabled={busy || bailCree != null}
+                    progression={progression}
+                    resultats={resultatsImport}
+                    aide="Déposés après la création du bail : le fichier « Bail » devient LE bail signé du dossier (le bail passe actif) ; les autres pièces (règlements, assurance…) sont classées au dossier du locataire et du bail."
+                  />
+                </div>
                 <button
-                  className="text-xs text-white/50 underline hover:text-white"
+                  className="text-xs text-white/50 underline hover:text-white disabled:opacity-40"
+                  disabled={busy || bailCree != null}
                   onClick={() => setCreerNouveau(false)}
                 >
                   ← choisir un locataire existant
@@ -605,18 +733,49 @@ function AssignerBailModal({
           </LouerIndefinimentBulle>
         ) : null}
 
-        <button
-          className="btn-accent btn-sm mt-4 w-full justify-center disabled:opacity-50"
-          disabled={busy}
-          onClick={() => void assigner()}
-        >
-          {busy ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <UserPlus className="h-4 w-4" />
-          )}
-          Créer le bail et assigner
-        </button>
+        {bailCree ? (
+          <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
+            <button
+              className="btn-secondary btn-sm disabled:opacity-50"
+              disabled={busy}
+              onClick={onDone}
+              title="Le bail est créé : les documents en échec pourront être importés depuis la fiche du locataire"
+            >
+              Fermer
+            </button>
+            <button
+              className="btn-accent btn-sm disabled:opacity-50"
+              disabled={busy}
+              onClick={() => void reessayerEchecs()}
+            >
+              {busy ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Import {texteProgression(progression)}…
+                </>
+              ) : (
+                "Réessayer les échecs"
+              )}
+            </button>
+          </div>
+        ) : (
+          <button
+            className="btn-accent btn-sm mt-4 w-full justify-center disabled:opacity-50"
+            disabled={busy}
+            onClick={() => void assigner()}
+          >
+            {busy ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <UserPlus className="h-4 w-4" />
+            )}
+            {enCoursImport
+              ? `Import des documents ${texteProgression(progression)}…`
+              : mode === "logement" && creerNouveau && fichiers.length > 0
+                ? `Créer le bail + ${fichiers.length} document${fichiers.length > 1 ? "s" : ""}`
+                : "Créer le bail et assigner"}
+          </button>
+        )}
       </div>
     </div>
   );
