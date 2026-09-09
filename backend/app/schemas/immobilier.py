@@ -546,7 +546,7 @@ class DossierBail(BaseModel):
     depot_garantie: Optional[float] = None
     status: str
     #: Statut du dossier de relocation ACTIF lié (kanban Locations) :
-    #: par le bail ENTRANT (bail_a_envoyer | bail_envoye) OU par le
+    #: par le bail ENTRANT (bail_envoye = bail en signature) OU par le
     #: bail SORTANT (avis_recu, visites… — M1, audit 2026-08-13).
     relocation_statut: Optional[str] = None
     #: Id du dossier lié — lien « Ouvrir dans Locations » ciblé.
@@ -643,7 +643,7 @@ class LogementDossierBail(BaseModel):
     date_fin: date
     status: str
     #: Statut du dossier de relocation ACTIF lié (kanban Locations) :
-    #: par le bail ENTRANT (bail_a_envoyer | bail_envoye) OU par le
+    #: par le bail ENTRANT (bail_envoye = bail en signature) OU par le
     #: bail SORTANT (avis_recu, visites… — M1, audit 2026-08-13).
     relocation_statut: Optional[str] = None
     #: Id du dossier lié — lien « Ouvrir dans Locations » ciblé.

@@ -26,6 +26,7 @@ async def recalage_quotidien(db: AsyncSession) -> dict:
         refermer_dossiers_reloues,
     )
     from app.services.locatif_depart import (
+        migrer_statuts_legacy,
         recaler_tous_les_statuts_logements,
         reconduire_tacitement_baux_echus,
     )
@@ -41,6 +42,7 @@ async def recalage_quotidien(db: AsyncSession) -> dict:
         )
     ).scalars().all()
     modifie = await reconduire_tacitement_baux_echus(db, baux)
+    n_legacy = await migrer_statuts_legacy(db)
     n_ext = await annuler_dossiers_externes(db)
     n_ref = await refermer_dossiers_reloues(db)
     n_statuts = await recaler_tous_les_statuts_logements(db)
@@ -48,6 +50,7 @@ async def recalage_quotidien(db: AsyncSession) -> dict:
     out = {
         "baux_echus_examines": len(baux),
         "baux_modifies": bool(modifie),
+        "dossiers_statuts_migres": n_legacy,
         "dossiers_externes_annules": n_ext,
         "dossiers_refermes": n_ref,
         "statuts_recales": int(n_statuts or 0),
