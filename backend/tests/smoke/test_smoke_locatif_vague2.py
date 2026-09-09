@@ -253,7 +253,7 @@ def test_relocation_statut_present_sur_le_bail_sortant(
             d = LocationDossier(
                 logement_id=ids["logement_id"],
                 bail_id=ids["bail_id"],
-                statut="visites",
+                statut="annonce_publiee",
                 date_depart=today + timedelta(days=120),
             )
             s.add(d)
@@ -271,7 +271,7 @@ def test_relocation_statut_present_sur_le_bail_sortant(
     bail_row = next(
         b for b in rl.json()["baux"] if b["id"] == ids["bail_id"]
     )
-    assert bail_row["relocation_statut"] == "visites"
+    assert bail_row["relocation_statut"] == "annonce_publiee"
     assert bail_row["relocation_dossier_id"] == dossier_id
 
     # Fiche logement : même pastille.
@@ -283,7 +283,7 @@ def test_relocation_statut_present_sur_le_bail_sortant(
     bail_row2 = next(
         b for b in rg.json()["baux"] if b["id"] == ids["bail_id"]
     )
-    assert bail_row2["relocation_statut"] == "visites"
+    assert bail_row2["relocation_statut"] == "annonce_publiee"
     assert bail_row2["relocation_dossier_id"] == dossier_id
 
 

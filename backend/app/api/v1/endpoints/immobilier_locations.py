@@ -1,21 +1,21 @@
 """Pipeline « Locations » (relocation / vacances) — Gestion locative.
 
-Un LocationDossier suit la relocation d'un logement : le locataire
-confirme son départ → annonce(s) publiée(s) → visites de candidats →
-candidat retenu → reloué (nouveau bail signé ailleurs). Tout est
-consigné À LA MAIN par l'employé — aucun automatisme externe.
+Location SIMPLIFIÉE (retour Phil 2026-09-09) : un LocationDossier suit
+la relocation d'un logement en QUATRE étapes — « À louer » (départ
+confirmé / unité libre) → « Affiché » (l'annonce est en ligne, ailleurs)
+→ « Bail en signature » (un locataire est LIÉ : existant ou créé sur
+place, son bail est proposé) → « Reloué » (bail signé importé, ou
+produit par le futur système interne). Plus d'annonces, de visites, de
+candidats ni d'enquêtes dans Kratos : ça se passe hors de l'outil.
 
 Endpoints :
-    GET    /immobilier/locations/overview   (KPIs + dossiers enrichis)
-    POST   /immobilier/locations            (créer un dossier)
+    GET    /immobilier/locations/overview          (KPIs + dossiers)
+    POST   /immobilier/locations                   (créer un dossier)
     PATCH  /immobilier/locations/{id}
     DELETE /immobilier/locations/{id}
-    POST   /immobilier/locations/{id}/annonces
-    PATCH  /immobilier/locations/annonces/{id}
-    DELETE /immobilier/locations/annonces/{id}
-    POST   /immobilier/locations/{id}/visites
-    PATCH  /immobilier/locations/visites/{id}
-    DELETE /immobilier/locations/visites/{id}
+    POST   /immobilier/locations/{id}/lier-locataire  (= /convertir)
+    POST   /immobilier/locations/{id}/desistement  (retirer le locataire)
+    GET    /immobilier/suivi-baux                  (page Baux)
 """
 
 from __future__ import annotations
@@ -36,10 +36,8 @@ from app.models.immobilier import (
     BailStatus,
     Immeuble,
     Locataire,
-    LocationAnnonce,
     LocationDossier,
     LocationDossierStatut,
-    LocationVisite,
     Logement,
     LogementStatus,
 )
@@ -47,6 +45,7 @@ from app.models.immobilier import (
 from app.services.locatif_depart import (
     DOSSIER_STATUTS_REGLES,
     marquer_prise_en_charge_humaine,
+    normaliser_statut_location,
     recaler_statut_logement,
 )
 
@@ -80,78 +79,6 @@ def _now() -> datetime:
 # ─── Schemas ────────────────────────────────────────────────────────────
 
 
-class AnnonceRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-    id: int
-    dossier_id: int
-    plateforme: str
-    url: Optional[str] = None
-    publiee_le: Optional[date] = None
-    active: bool
-
-
-class AnnonceCreate(BaseModel):
-    plateforme: str = Field(..., min_length=1, max_length=64)
-    url: Optional[str] = Field(default=None, max_length=1000)
-    publiee_le: Optional[date] = None
-
-
-class AnnonceUpdate(BaseModel):
-    plateforme: Optional[str] = Field(default=None, max_length=64)
-    url: Optional[str] = Field(default=None, max_length=1000)
-    publiee_le: Optional[date] = None
-    active: Optional[bool] = None
-
-
-class VisiteRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-    id: int
-    dossier_id: int
-    quand: Optional[datetime] = None
-    candidat_nom: str
-    candidat_contact: Optional[str] = None  # legacy (tél/courriel mélangés)
-    candidat_email: Optional[str] = None
-    candidat_phone: Optional[str] = None
-    statut: str
-    interesse: Optional[bool] = None
-    notes: Optional[str] = None
-    # Prélocation : null = pas faite, true = OK, false = KO.
-    enquete_credit: Optional[bool] = None
-    enquete_references: Optional[bool] = None
-    enquete_emploi: Optional[bool] = None
-    enquete_notes: Optional[str] = None
-    retenu: bool = False
-    #: Candidat = locataire existant (déjà client).
-    locataire_id: Optional[int] = None
-
-
-class VisiteCreate(BaseModel):
-    quand: Optional[datetime] = None
-    #: Locataire EXISTANT — nom/courriel/téléphone repris de sa fiche.
-    locataire_id: Optional[int] = None
-    candidat_nom: str = Field(..., min_length=1, max_length=255)
-    candidat_contact: Optional[str] = Field(default=None, max_length=255)
-    candidat_email: Optional[str] = Field(default=None, max_length=320)
-    candidat_phone: Optional[str] = Field(default=None, max_length=50)
-    notes: Optional[str] = None
-
-
-class VisiteUpdate(BaseModel):
-    quand: Optional[datetime] = None
-    candidat_nom: Optional[str] = Field(default=None, max_length=255)
-    candidat_contact: Optional[str] = Field(default=None, max_length=255)
-    candidat_email: Optional[str] = Field(default=None, max_length=320)
-    candidat_phone: Optional[str] = Field(default=None, max_length=50)
-    statut: Optional[str] = Field(default=None, max_length=16)
-    interesse: Optional[bool] = None
-    notes: Optional[str] = None
-    enquete_credit: Optional[bool] = None
-    enquete_references: Optional[bool] = None
-    enquete_emploi: Optional[bool] = None
-    enquete_notes: Optional[str] = None
-    retenu: Optional[bool] = None
-
-
 class DossierRow(BaseModel):
     id: int
     logement_id: int
@@ -170,20 +97,25 @@ class DossierRow(BaseModel):
     # à rendre à son départ — rappel affiché sur le dossier.
     depot_sortant: Optional[float] = None
     depot_sortant_rendu_le: Optional[date] = None
-    # Bail créé par la conversion « candidat retenu → bail » (lien).
+    # Bail PROPOSÉ créé quand un locataire est LIÉ au dossier
+    # (« Lier un locataire ») — la carte est alors « Bail en signature ».
     nouveau_bail_id: Optional[int] = None
     nouveau_locataire_id: Optional[int] = None
+    nouveau_locataire_nom: Optional[str] = None
+    nouveau_bail_date_debut: Optional[date] = None
+    nouveau_bail_loyer: Optional[float] = None
+    #: PDF du bail signé au dossier (None = en attente de signature).
+    nouveau_bail_document_id: Optional[int] = None
     gestion_externe: bool = False
-    annonces: List[AnnonceRead] = Field(default_factory=list)
-    visites: List[VisiteRead] = Field(default_factory=list)
     created_at: Optional[datetime] = None
 
 
 class LocationsOverview(BaseModel):
     rows: List[DossierRow] = Field(default_factory=list)
     nb_actifs: int = 0
-    nb_annonces_actives: int = 0
-    nb_visites_a_venir: int = 0
+    nb_a_louer: int = 0
+    nb_affiches: int = 0
+    nb_en_signature: int = 0
     nb_reloues_90j: int = 0
     # Jours de vacance moyens des dossiers actifs dont le locataire est
     # déjà parti (aujourd'hui − date de départ).
@@ -235,24 +167,28 @@ async def _to_row(db, d: LocationDossier) -> DossierRow:
             if bail.depot_garantie is not None and float(bail.depot_garantie) > 0:
                 depot_sortant = float(bail.depot_garantie)
                 depot_sortant_rendu_le = bail.depot_rendu_le
-    annonces = (
-        await db.execute(
-            select(LocationAnnonce)
-            .where(LocationAnnonce.dossier_id == d.id)
-            .order_by(LocationAnnonce.id.asc())
-        )
-    ).scalars().all()
-    visites = (
-        await db.execute(
-            select(LocationVisite)
-            .where(LocationVisite.dossier_id == d.id)
-            .order_by(LocationVisite.quand.asc().nulls_last())
-        )
-    ).scalars().all()
     nouveau_locataire_id = None
+    nouveau_locataire_nom = None
+    nouveau_bail_date_debut = None
+    nouveau_bail_loyer = None
+    nouveau_bail_document_id = None
     if d.nouveau_bail_id:
         nb = await db.get(Bail, d.nouveau_bail_id)
-        nouveau_locataire_id = nb.locataire_id if nb else None
+        if nb is not None:
+            nouveau_locataire_id = nb.locataire_id
+            nouveau_bail_date_debut = nb.date_debut
+            nouveau_bail_loyer = (
+                float(nb.loyer_mensuel)
+                if nb.loyer_mensuel is not None
+                else None
+            )
+            nouveau_bail_document_id = nb.document_id
+            nlo = (
+                await db.get(Locataire, nb.locataire_id)
+                if nb.locataire_id
+                else None
+            )
+            nouveau_locataire_nom = nlo.full_name if nlo else None
     return DossierRow(
         id=d.id,
         logement_id=d.logement_id,
@@ -261,7 +197,9 @@ async def _to_row(db, d: LocationDossier) -> DossierRow:
         immeuble_name=(im.name if im else "—"),
         bail_id=d.bail_id,
         locataire_sortant=locataire_sortant,
-        statut=d.statut,
+        # Anciennes étapes traduites à la lecture (la migration passe
+        # au recalage quotidien / au démarrage).
+        statut=normaliser_statut_location(d.statut, d.nouveau_bail_id),
         date_depart=d.date_depart,
         loyer_demande=(
             float(d.loyer_demande) if d.loyer_demande is not None else None
@@ -275,47 +213,13 @@ async def _to_row(db, d: LocationDossier) -> DossierRow:
         depot_sortant_rendu_le=depot_sortant_rendu_le,
         nouveau_bail_id=d.nouveau_bail_id,
         nouveau_locataire_id=nouveau_locataire_id,
+        nouveau_locataire_nom=nouveau_locataire_nom,
+        nouveau_bail_date_debut=nouveau_bail_date_debut,
+        nouveau_bail_loyer=nouveau_bail_loyer,
+        nouveau_bail_document_id=nouveau_bail_document_id,
         gestion_externe=bool(im.gestion_externe) if im else False,
-        annonces=[AnnonceRead.model_validate(a) for a in annonces],
-        visites=[VisiteRead.model_validate(v) for v in visites],
         created_at=d.created_at,
     )
-
-
-async def _regress_si_plus_de_visites(db, dossier_id: int) -> None:
-    """Si le dossier est à « Visite prévue » mais qu'il ne reste AUCUNE
-    visite planifiée (elles ont été faites sans retenir personne, ou
-    annulées/absents/supprimées), il RECULE à « Annonce publiée » (ou
-    « Départ confirmé » s'il n'y a pas d'annonce active) — demande Phil
-    2026-07-10."""
-    dossier = await db.get(LocationDossier, dossier_id)
-    if dossier is None or dossier.statut != LocationDossierStatut.VISITES.value:
-        return
-    visites = (
-        await db.execute(
-            select(LocationVisite).where(
-                LocationVisite.dossier_id == dossier_id
-            )
-        )
-    ).scalars().all()
-    if any(v.retenu for v in visites):
-        return
-    if any(v.statut == "planifiee" for v in visites):
-        return
-    annonces_actives = (
-        await db.execute(
-            select(LocationAnnonce).where(
-                LocationAnnonce.dossier_id == dossier_id,
-                LocationAnnonce.active.is_(True),
-            )
-        )
-    ).scalars().first()
-    dossier.statut = (
-        LocationDossierStatut.ANNONCE_PUBLIEE.value
-        if annonces_actives is not None
-        else LocationDossierStatut.AVIS_RECU.value
-    )
-    dossier.updated_at = _now()
 
 
 # ─── Overview ───────────────────────────────────────────────────────────
@@ -377,20 +281,6 @@ async def locations_overview(
 
     now = _now()
     today = now.date()
-    nb_annonces_actives = sum(
-        1
-        for r in rows
-        if r.statut in STATUTS_ACTIFS
-        for a in r.annonces
-        if a.active
-    )
-    nb_visites_a_venir = sum(
-        1
-        for r in rows
-        if r.statut in STATUTS_ACTIFS
-        for v in r.visites
-        if v.statut == "planifiee" and (v.quand is None or v.quand >= now)
-    )
     # Vacance moyenne : dossiers actifs dont le locataire est déjà parti.
     vacances = [
         (today - r.date_depart).days
@@ -402,8 +292,18 @@ async def locations_overview(
     return LocationsOverview(
         rows=rows,
         nb_actifs=sum(1 for r in rows if r.statut in STATUTS_ACTIFS),
-        nb_annonces_actives=nb_annonces_actives,
-        nb_visites_a_venir=nb_visites_a_venir,
+        nb_a_louer=sum(
+            1 for r in rows
+            if r.statut == LocationDossierStatut.AVIS_RECU.value
+        ),
+        nb_affiches=sum(
+            1 for r in rows
+            if r.statut == LocationDossierStatut.ANNONCE_PUBLIEE.value
+        ),
+        nb_en_signature=sum(
+            1 for r in rows
+            if r.statut == LocationDossierStatut.BAIL_ENVOYE.value
+        ),
         nb_reloues_90j=sum(
             1
             for r in rows
@@ -530,14 +430,8 @@ async def _bail_propose_orphelin(
 
     Sert à réparer un lien perdu plutôt qu'à bloquer l'utilisateur. On
     reste prudent : un bail déjà revendiqué par un autre dossier n'est
-    jamais volé, et sans candidat retenu il n'y a rien à rattacher.
+    jamais volé.
     """
-    if dossier.statut in (
-        LocationDossierStatut.AVIS_RECU.value,
-        LocationDossierStatut.ANNONCE_PUBLIEE.value,
-        LocationDossierStatut.VISITES.value,
-    ):
-        return None
     revendiques = {
         r[0]
         for r in (
@@ -578,72 +472,58 @@ async def update_dossier(
     _require_volet(user)
     obj = await _dossier_or_404(db, dossier_id)
     data = payload.model_dump(exclude_unset=True)
-    if "statut" in data and data["statut"] not in STATUTS_VALIDES:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY, "Statut invalide."
+    if "statut" in data:
+        # Anciennes étapes (visites, candidat retenu, bail à envoyer)
+        # traduites à la volée — un vieux client ne casse rien.
+        data["statut"] = normaliser_statut_location(
+            data["statut"], obj.nouveau_bail_id
         )
-    # Matrice de transitions (audit 2026-07-31) — le kanban ne peut pas
-    # fabriquer d'états impossibles :
+        if data["statut"] not in STATUTS_VALIDES:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY, "Statut invalide."
+            )
+    statut_courant = normaliser_statut_location(
+        obj.statut, obj.nouveau_bail_id
+    )
+    # Matrice de transitions (Location simplifiée 2026-09-09) — le
+    # kanban ne peut pas fabriquer d'états impossibles :
     nouveau_statut = data.get("statut")
-    if nouveau_statut and nouveau_statut != obj.statut:
+    if nouveau_statut and nouveau_statut != statut_courant:
         if (
             nouveau_statut
             in (
-                LocationDossierStatut.BAIL_A_ENVOYER.value,
                 LocationDossierStatut.BAIL_ENVOYE.value,
                 LocationDossierStatut.RELOUE.value,
             )
             and obj.nouveau_bail_id is None
         ):
-            # RÉPARATION avant refus (audit 2026-08-19). Un aller-retour
-            # sur le kanban détachait le bail créé à la conversion, mais
-            # le bail, lui, survivait : le dossier se retrouvait avec un
-            # candidat retenu, un bail orphelin, et ce garde-fou qui
-            # répondait « convertis le candidat d'abord » — impasse dont
-            # Phil ne pouvait plus sortir. Si un bail PROPOSÉ traîne sur
-            # ce logement sans appartenir à un autre dossier actif, il
-            # est manifestement celui de ce dossier : on le rattache.
+            # RÉPARATION avant refus (audit 2026-08-19) : un bail
+            # PROPOSÉ qui traîne sur ce logement sans appartenir à un
+            # autre dossier actif est manifestement celui-ci.
             orphelin = await _bail_propose_orphelin(db, obj)
             if orphelin is not None:
                 obj.nouveau_bail_id = orphelin.id
                 log.info(
-                    "Dossier %s : bail proposé %s rattaché (lien perdu "
-                    "lors d'un aller-retour du kanban)",
+                    "Dossier %s : bail proposé %s rattaché (lien perdu)",
                     obj.id, orphelin.id,
                 )
             else:
                 # Message ACTIONNABLE : dire ce qui manque ET où
-                # cliquer. « Trop compliqué pour rien » (Phil) vient
-                # souvent d'un refus qui ne dit pas quoi faire.
-                a_un_candidat = (
-                    await db.execute(
-                        select(LocationVisite).where(
-                            LocationVisite.dossier_id == obj.id,
-                            LocationVisite.retenu.is_(True),
-                        )
-                    )
-                ).scalars().first() is not None
+                # cliquer.
                 raise HTTPException(
                     status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    (
-                        "Ce dossier n'a pas encore de bail. Ouvre la "
-                        "fiche et clique « Créer le locataire + bail » "
-                        "sur le candidat retenu."
-                        if a_un_candidat
-                        else "Ce dossier n'a pas encore de candidat "
-                        "retenu. Ouvre la fiche, retiens un candidat "
-                        "dans « Visites & candidats », puis crée le "
-                        "locataire."
-                    ),
+                    "Ce dossier n'a pas encore de locataire. Ouvre la "
+                    "fiche et clique « Lier un locataire » (déjà client "
+                    "ou nouveau) — son bail se crée en même temps.",
                 )
-        if obj.statut == LocationDossierStatut.RELOUE.value:
+        if statut_courant == LocationDossierStatut.RELOUE.value:
             raise HTTPException(
                 status.HTTP_409_CONFLICT,
                 "Ce dossier est reloué — pour revenir en arrière, "
                 "passe par la résiliation du bail (page Baux).",
             )
         if (
-            obj.statut == LocationDossierStatut.ANNULE.value
+            statut_courant == LocationDossierStatut.ANNULE.value
             and nouveau_statut in STATUTS_ACTIFS
         ):
             autre = (
@@ -663,29 +543,28 @@ async def update_dossier(
                     "Un autre dossier de relocation est déjà actif "
                     "sur ce logement.",
                 )
-        # m2 (audit 2026-08-13, corrigé le 2026-08-19) : reculer une
-        # carte AVANT le candidat retenu détache le bail créé à la
-        # conversion — à ce stade on abandonne le candidat lui-même,
-        # donc le lien n'a plus de sens.
-        #
-        # ⚠️ « Candidat retenu » est EXCLU de cette liste. Y revenir ne
-        # renie pas le candidat : il est toujours retenu, et son bail
-        # existe toujours. Détacher le lien à ce moment-là fabriquait
-        # exactement l'impasse rapportée par Phil — carte bloquée, et
-        # « créer le locataire » proposé pour un locataire déjà créé.
+        # Reculer une carte qui a déjà un locataire lié détachait
+        # autrefois le bail (bail orphelin, impasse rapportée par Phil
+        # le 2026-08-19). Désormais on REFUSE en disant quoi faire : le
+        # retrait du locataire est un geste explicite.
         if (
             nouveau_statut
             in (
                 LocationDossierStatut.AVIS_RECU.value,
                 LocationDossierStatut.ANNONCE_PUBLIEE.value,
-                LocationDossierStatut.VISITES.value,
             )
             and obj.nouveau_bail_id is not None
         ):
-            obj.nouveau_bail_id = None
-        # M9b : un humain déplace la carte au-delà de « Départ
-        # confirmé » → le dossier auto-créé est pris en charge (il
-        # redevient facturable comme frais de relocation).
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "Un locataire est déjà lié à ce dossier (bail en "
+                "signature). Pour revenir en arrière, clique « Retirer "
+                "le locataire » dans la fiche — son bail proposé est "
+                "supprimé.",
+            )
+        # M9b : un humain déplace la carte au-delà de « À louer » → le
+        # dossier auto-créé est pris en charge (il redevient facturable
+        # comme frais de relocation).
         if nouveau_statut not in (
             LocationDossierStatut.AVIS_RECU.value,
             LocationDossierStatut.ANNULE.value,
@@ -760,10 +639,10 @@ async def update_dossier(
 async def delete_dossier(
     dossier_id: int, db: DBSession, user: CurrentUser
 ) -> None:
-    """Supprime le dossier — ET le locataire/bail créés à la
-    conversion s'il y en a. Un dossier RELOUÉ (bail signé en
-    production) ne supprime QUE la carte : le bail et le locataire
-    restent intacts (audit 2026-07-31)."""
+    """Supprime le dossier — ET le bail proposé (et la fiche locataire
+    si elle a été créée sur place) s'il y en a. Un dossier RELOUÉ (bail
+    signé en production) ne supprime QUE la carte : le bail et le
+    locataire restent intacts (audit 2026-07-31)."""
     _require_volet(user)
     obj = await _dossier_or_404(db, dossier_id)
     logement_id = obj.logement_id
@@ -775,17 +654,18 @@ async def delete_dossier(
     await db.commit()
 
 
-# ─── Conversion candidat retenu → locataire + bail ──────────────────────
+# ─── « Lier un locataire » (existant ou créé sur place) → bail proposé ──
 
 
 class ConvertirRequest(BaseModel):
-    """Tout est prérempli côté UI mais MODIFIABLE avant confirmation —
-    rien ne se crée sans l'accord explicite de l'usager."""
+    """« Lier un locataire » (Location simplifiée, 2026-09-09) : un
+    locataire EXISTANT (``locataire_id`` — aucune fiche créée, zéro
+    doublon) ou une fiche créée sur place. Tout est prérempli côté UI
+    mais MODIFIABLE avant confirmation — rien ne se crée sans l'accord
+    explicite de l'usager."""
 
-    #: Locataire EXISTANT (déjà client) — si fourni, AUCUNE fiche n'est
-    #: créée : le bail s'attache à sa fiche (pas de doublon).
     locataire_id: Optional[int] = None
-    locataire_nom: str = Field(..., min_length=2, max_length=255)
+    locataire_nom: Optional[str] = Field(default=None, max_length=255)
     locataire_email: Optional[str] = Field(default=None, max_length=320)
     locataire_phone: Optional[str] = Field(default=None, max_length=50)
     date_naissance: Optional[date] = None
@@ -806,6 +686,11 @@ class ConvertirResult(BaseModel):
 
 
 @router.post(
+    "/locations/{dossier_id}/lier-locataire",
+    response_model=ConvertirResult,
+    status_code=status.HTTP_201_CREATED,
+)
+@router.post(
     "/locations/{dossier_id}/convertir",
     response_model=ConvertirResult,
     status_code=status.HTTP_201_CREATED,
@@ -816,14 +701,14 @@ async def convertir_dossier(
     db: DBSession,
     user: CurrentUser,
 ) -> ConvertirResult:
-    """Le candidat retenu devient LOCATAIRE avec son BAIL (statut
-    « proposé »). Le dossier passe à « bail à envoyer » : le bail se
-    prépare et s'envoie dans le système de la CORPIQ (hors Kratos),
-    puis la carte se glisse à « bail envoyé ». Le passage à « reloué »
-    exige l'IMPORT du bail signé. Le logement devient « réservé »
-    (occupé quand le bail commencera)."""
+    """Lie un LOCATAIRE au dossier (déjà client, ou fiche créée sur
+    place) et crée son BAIL (statut « proposé »). La carte passe à
+    « Bail en signature ». Le passage à « Reloué » exige le bail signé
+    au dossier : importé (PDF du gestionnaire) ou produit par le futur
+    système interne. Le logement devient « réservé » (occupé quand le
+    bail commencera). ``/convertir`` est l'ancien nom de la route."""
     _require_volet(user)
-    # Verrou de ligne (audit 2026-07-31) : deux conversions simultanées
+    # Verrou de ligne (audit 2026-07-31) : deux liaisons simultanées
     # (double-clic) deviennent séquentielles — la seconde frappe la
     # garde au lieu de créer un doublon.
     dossier = (
@@ -838,35 +723,22 @@ async def convertir_dossier(
             status.HTTP_404_NOT_FOUND, "Dossier introuvable."
         )
     if (
-        dossier.statut
-        in (
-            LocationDossierStatut.RELOUE.value,
-            LocationDossierStatut.BAIL_ENVOYE.value,
-            LocationDossierStatut.BAIL_A_ENVOYER.value,
-            LocationDossierStatut.ANNULE.value,
-        )
+        dossier.statut in DOSSIER_STATUTS_REGLES
         or dossier.nouveau_bail_id is not None
     ):
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            "Ce dossier est annulé ou un locataire a déjà été créé.",
+            "Ce dossier est réglé ou un locataire y est déjà lié.",
         )
-    # Candidat retenu déjà LIÉ à un locataire existant → sa fiche est
-    # réutilisée même sans choisir le mode « existant » (zéro doublon).
     locataire_id_effectif = payload.locataire_id
-    if locataire_id_effectif is None:
-        locataire_id_effectif = (
-            await db.execute(
-                select(LocationVisite.locataire_id).where(
-                    LocationVisite.dossier_id == dossier.id,
-                    LocationVisite.retenu.is_(True),
-                    LocationVisite.locataire_id.is_not(None),
-                )
-            )
-        ).scalars().first()
     # Identité obligatoire seulement à la CRÉATION d'une fiche — un
     # locataire existant garde la sienne.
     if locataire_id_effectif is None:
+        if len((payload.locataire_nom or "").strip()) < 2:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "Le nom du locataire est obligatoire.",
+            )
         if payload.date_naissance is None:
             raise HTTPException(
                 status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -893,50 +765,19 @@ async def convertir_dossier(
 
     now = _now()
 
-    # Transfert de la PRÉLOCATION : le candidat retenu emporte ses
-    # résultats d'enquête et ses notes dans la fiche du locataire.
-    retenu = (
-        await db.execute(
-            select(LocationVisite).where(
-                LocationVisite.dossier_id == dossier.id,
-                LocationVisite.retenu.is_(True),
-            )
-        )
-    ).scalars().first()
-    notes_locataire = None
-    if retenu is not None:
-        def _lbl(v: Optional[bool]) -> str:
-            return "OK" if v is True else "refusé" if v is False else "non faite"
-
-        lignes = [
-            "Prélocation (dossier de relocation) :",
-            f"- Enquête de crédit : {_lbl(retenu.enquete_credit)}",
-            f"- Références : {_lbl(retenu.enquete_references)}",
-            f"- Vérification d'emploi : {_lbl(retenu.enquete_emploi)}",
-        ]
-        if (retenu.enquete_notes or "").strip():
-            lignes.append(f"Notes d'enquête : {retenu.enquete_notes.strip()}")
-        if (retenu.notes or "").strip():
-            lignes.append(f"Notes du candidat : {retenu.notes.strip()}")
-        notes_locataire = "\n".join(lignes)
-
     if locataire_id_effectif is not None:
         # Déjà client : on réutilise SA fiche (historique conservé,
-        # pas de doublon) — la trace d'enquête s'ajoute à ses notes.
+        # pas de doublon).
         locataire = await db.get(Locataire, locataire_id_effectif)
         if locataire is None:
             raise HTTPException(
                 status.HTTP_404_NOT_FOUND,
                 "Locataire existant introuvable.",
             )
-        if notes_locataire:
-            locataire.notes = (
-                (locataire.notes + "\n\n") if locataire.notes else ""
-            ) + notes_locataire
         locataire.updated_at = now
     else:
         locataire = Locataire(
-            full_name=payload.locataire_nom.strip(),
+            full_name=(payload.locataire_nom or "").strip(),
             email=(payload.locataire_email or "").strip() or None,
             phone=(payload.locataire_phone or "").strip() or None,
             date_naissance=payload.date_naissance,
@@ -945,7 +786,6 @@ async def convertir_dossier(
             or None,
             employeur=(payload.employeur or "").strip() or None,
             revenu_annuel=payload.revenu_annuel,
-            notes=notes_locataire,
         )
         locataire.created_at = now
         locataire.updated_at = now
@@ -976,16 +816,17 @@ async def convertir_dossier(
 
     dossier.nouveau_bail_id = bail.id
     dossier.updated_at = now
-    # Réservé = bail signé/à signer pas encore commencé (le passage à
+    # Réservé = bail à signer pas encore commencé (le passage à
     # « occupé » suit le cycle normal du bail).
     lg.status = LogementStatus.RESERVE.value
     immeuble_id = lg.immeuble_id
 
-    # Le bail se prépare et s'envoie dans le système CORPIQ (hors
-    # Kratos) : la carte passe à « bail à envoyer ».
-    dossier.statut = LocationDossierStatut.BAIL_A_ENVOYER.value
-    # M9b : la conversion est un geste HUMAIN — un dossier auto-créé
-    # est pris en charge (frais de relocation à nouveau facturables).
+    # Locataire lié, bail proposé : la carte passe à « Bail en
+    # signature ».
+    dossier.statut = LocationDossierStatut.BAIL_ENVOYE.value
+    # M9b : lier un locataire est un geste HUMAIN — un dossier
+    # auto-créé est pris en charge (frais de relocation à nouveau
+    # facturables).
     marquer_prise_en_charge_humaine(dossier)
 
     locataire_id = locataire.id
@@ -995,14 +836,14 @@ async def convertir_dossier(
     # Consentement aux communications électroniques : le PDF est généré et
     # ARCHIVÉ au dossier du bail. Aucun courriel n'est envoyé — l'envoi pour
     # signature reste un geste manuel (règle « zéro envoi auto au locataire »).
-    # Best-effort : un échec ne bloque jamais la conversion.
+    # Best-effort : un échec ne bloque jamais la liaison.
     try:
         from app.api.v1.endpoints.immobilier_extras import (
             preparer_consentement_communications,
         )
 
         await preparer_consentement_communications(db, bail_id, user)
-    except Exception:  # noqa: BLE001 — la conversion prime
+    except Exception:  # noqa: BLE001 — la liaison prime
         log.exception(
             "Préparation du consentement communications échouée (bail %s)", bail_id
         )
@@ -1014,7 +855,7 @@ async def convertir_dossier(
     )
 
 
-# ─── Désistement du candidat converti ───────────────────────────────────
+# ─── Retirer le locataire lié (désistement) ─────────────────────────────
 
 
 async def _recaler_statut_logement(db, logement_id: int) -> None:
@@ -1025,10 +866,11 @@ async def _recaler_statut_logement(db, logement_id: int) -> None:
 
 
 async def _supprimer_bail_et_locataire_crees(db, dossier) -> None:
-    """Supprime le bail créé à la conversion — et le locataire s'il n'a
-    aucun autre bail (avec ses communications et documents). Utilisé par
-    le DÉSISTEMENT et par la SUPPRESSION du dossier (retour Phil
-    2026-07-31 : « delete-le aussi »). 409 si des paiements existent."""
+    """Supprime le bail proposé créé en liant le locataire — et la fiche
+    locataire si elle a été créée sur place et n'a aucun autre bail (avec
+    ses communications et documents). Utilisé par « Retirer le
+    locataire » et par la SUPPRESSION du dossier (retour Phil 2026-07-31 :
+    « delete-le aussi »). 409 si des paiements existent."""
     from app.models.immobilier import (
         BailRenouvellement,
         ImmDocument,
@@ -1082,9 +924,9 @@ async def _supprimer_bail_et_locataire_crees(db, dossier) -> None:
         ).scalars().all():
             await db.delete(r)
         await db.delete(bail)
-    # La fiche d'un client EXISTANT réutilisée à la conversion n'est
-    # JAMAIS supprimée — seules les fiches créées par la conversion
-    # partent avec le désistement (audit 2026-07-31).
+    # La fiche d'un client EXISTANT lié au dossier n'est JAMAIS
+    # supprimée — seules les fiches créées sur place partent avec le
+    # retrait (audit 2026-07-31).
     if locataire_id is not None and not getattr(
         dossier, "locataire_cree", False
     ):
@@ -1128,21 +970,22 @@ async def _supprimer_bail_et_locataire_crees(db, dossier) -> None:
 async def desistement_candidat(
     dossier_id: int, db: DBSession, user: CurrentUser
 ) -> DossierRow:
-    """Le candidat converti se désiste : le bail créé (et le locataire,
-    s'il n'a aucun autre bail) est SUPPRIMÉ, le dossier revient à
-    « Départ confirmé » et le logement reprend son vrai statut (occupé
-    si le locataire sortant est encore en place, vacant sinon)."""
+    """« Retirer le locataire » : le bail proposé (et la fiche
+    locataire, si elle a été créée sur place et n'a aucun autre bail)
+    est SUPPRIMÉ, le dossier revient à « À louer » et le logement
+    reprend son vrai statut (occupé si le locataire sortant est encore
+    en place, vacant sinon)."""
     _require_volet(user)
     dossier = await _dossier_or_404(db, dossier_id)
     if dossier.nouveau_bail_id is None:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            "Aucun locataire converti sur ce dossier.",
+            "Aucun locataire lié à ce dossier.",
         )
     await _supprimer_bail_et_locataire_crees(db, dossier)
     dossier.reloue_le = None
     dossier.statut = LocationDossierStatut.AVIS_RECU.value
-    # m4 (audit 2026-08-13) : le dossier repart de « Départ confirmé »
+    # m4 (audit 2026-08-13) : le dossier repart de « À louer »
     # — ses infos de départ sont restaurées depuis le bail SORTANT
     # s'il existe (fill-only : on ne touche pas une saisie manuelle).
     if dossier.bail_id:
@@ -1199,7 +1042,7 @@ class SuiviBailRow(BaseModel):
     prochain_date_debut: Optional[date] = None
     prochain_loyer: Optional[float] = None
     prochain_document_id: Optional[int] = None
-    prochain_statut: Optional[str] = None  # bail_a_envoyer|bail_envoye|a_venir
+    prochain_statut: Optional[str] = None  # bail_envoye|a_venir
     # Dossier de relocation ACTIF du logement (sélecteur de statut
     # kanban sur la page Baux — même donnée que le kanban).
     dossier_id: Optional[int] = None
@@ -1302,7 +1145,9 @@ async def suivi_baux(
                 )
             )
         ).scalars().all():
-            reloc_by_bail[dsr.nouveau_bail_id] = dsr.statut
+            reloc_by_bail[dsr.nouveau_bail_id] = normaliser_statut_location(
+                dsr.statut, dsr.nouveau_bail_id
+            )
     # Dossier ACTIF par logement (sélecteur de statut, page Baux).
     dossier_par_log: dict = {}
     for dsr in (
@@ -1418,7 +1263,10 @@ async def suivi_baux(
                     else None
                 ),
                 dossier_statut=(
-                    dossier_par_log[lg.id].statut
+                    normaliser_statut_location(
+                        dossier_par_log[lg.id].statut,
+                        dossier_par_log[lg.id].nouveau_bail_id,
+                    )
                     if lg.id in dossier_par_log
                     else None
                 ),
@@ -1474,197 +1322,3 @@ async def suivi_baux(
             or r.prochain_locataire_id == locataire_id
         ]
     return out
-
-
-# ─── Annonces ───────────────────────────────────────────────────────────
-
-
-@router.post(
-    "/locations/{dossier_id}/annonces",
-    response_model=AnnonceRead,
-    status_code=status.HTTP_201_CREATED,
-)
-async def create_annonce(
-    dossier_id: int,
-    payload: AnnonceCreate,
-    db: DBSession,
-    user: CurrentUser,
-) -> AnnonceRead:
-    _require_volet(user)
-    dossier = await _dossier_or_404(db, dossier_id)
-    obj = LocationAnnonce(
-        dossier_id=dossier.id,
-        plateforme=payload.plateforme.strip(),
-        url=(payload.url or "").strip() or None,
-        publiee_le=payload.publiee_le or _now().date(),
-    )
-    obj.created_at = _now()
-    obj.updated_at = _now()
-    db.add(obj)
-    # Première annonce sur un dossier « départ confirmé » → il passe
-    # naturellement à « annonce publiée ».
-    if dossier.statut == LocationDossierStatut.AVIS_RECU.value:
-        dossier.statut = LocationDossierStatut.ANNONCE_PUBLIEE.value
-        dossier.updated_at = _now()
-    # M9b : publier une annonce est un geste HUMAIN — un dossier
-    # auto-créé est pris en charge (frais de relocation facturables).
-    marquer_prise_en_charge_humaine(dossier)
-    await db.commit()
-    await db.refresh(obj)
-    return AnnonceRead.model_validate(obj)
-
-
-@router.patch("/locations/annonces/{annonce_id}", response_model=AnnonceRead)
-async def update_annonce(
-    annonce_id: int,
-    payload: AnnonceUpdate,
-    db: DBSession,
-    user: CurrentUser,
-) -> AnnonceRead:
-    _require_volet(user)
-    obj = await db.get(LocationAnnonce, annonce_id)
-    if obj is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Annonce introuvable.")
-    for k, v in payload.model_dump(exclude_unset=True).items():
-        setattr(obj, k, v)
-    obj.updated_at = _now()
-    await db.commit()
-    await db.refresh(obj)
-    return AnnonceRead.model_validate(obj)
-
-
-@router.delete(
-    "/locations/annonces/{annonce_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-)
-async def delete_annonce(
-    annonce_id: int, db: DBSession, user: CurrentUser
-) -> None:
-    _require_volet(user)
-    obj = await db.get(LocationAnnonce, annonce_id)
-    if obj is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Annonce introuvable.")
-    await db.delete(obj)
-    await db.commit()
-
-
-# ─── Visites ────────────────────────────────────────────────────────────
-
-
-@router.post(
-    "/locations/{dossier_id}/visites",
-    response_model=VisiteRead,
-    status_code=status.HTTP_201_CREATED,
-)
-async def create_visite(
-    dossier_id: int,
-    payload: VisiteCreate,
-    db: DBSession,
-    user: CurrentUser,
-) -> VisiteRead:
-    _require_volet(user)
-    dossier = await _dossier_or_404(db, dossier_id)
-    lo = None
-    if payload.locataire_id is not None:
-        lo = await db.get(Locataire, payload.locataire_id)
-        if lo is None:
-            raise HTTPException(
-                status.HTTP_404_NOT_FOUND,
-                "Locataire existant introuvable.",
-            )
-    obj = LocationVisite(
-        dossier_id=dossier.id,
-        quand=payload.quand,
-        locataire_id=payload.locataire_id,
-        candidat_nom=payload.candidat_nom.strip(),
-        candidat_contact=(payload.candidat_contact or "").strip() or None,
-        candidat_email=(payload.candidat_email or "").strip()
-        or (lo.email if lo else None),
-        candidat_phone=(payload.candidat_phone or "").strip()
-        or (lo.phone if lo else None),
-        notes=payload.notes,
-    )
-    obj.created_at = _now()
-    obj.updated_at = _now()
-    db.add(obj)
-    # Première visite → le dossier passe à « visites en cours ».
-    if dossier.statut in (
-        LocationDossierStatut.AVIS_RECU.value,
-        LocationDossierStatut.ANNONCE_PUBLIEE.value,
-    ):
-        dossier.statut = LocationDossierStatut.VISITES.value
-        dossier.updated_at = _now()
-    # M9b : planifier une visite est un geste HUMAIN — un dossier
-    # auto-créé est pris en charge (frais de relocation facturables).
-    marquer_prise_en_charge_humaine(dossier)
-    await db.commit()
-    await db.refresh(obj)
-    return VisiteRead.model_validate(obj)
-
-
-@router.patch("/locations/visites/{visite_id}", response_model=VisiteRead)
-async def update_visite(
-    visite_id: int,
-    payload: VisiteUpdate,
-    db: DBSession,
-    user: CurrentUser,
-) -> VisiteRead:
-    _require_volet(user)
-    obj = await db.get(LocationVisite, visite_id)
-    if obj is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Visite introuvable.")
-    data = payload.model_dump(exclude_unset=True)
-    if "statut" in data and data["statut"] not in (
-        "planifiee", "faite", "absent", "annulee"
-    ):
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY, "Statut de visite invalide."
-        )
-    for k, v in data.items():
-        setattr(obj, k, v)
-    # « Retenu » est EXCLUSIF par dossier : retenir ce candidat déretient
-    # les autres et fait avancer le dossier à « candidat retenu ».
-    if data.get("retenu") is True:
-        autres = (
-            await db.execute(
-                select(LocationVisite).where(
-                    LocationVisite.dossier_id == obj.dossier_id,
-                    LocationVisite.id != obj.id,
-                    LocationVisite.retenu.is_(True),
-                )
-            )
-        ).scalars().all()
-        for a in autres:
-            a.retenu = False
-        dossier = await db.get(LocationDossier, obj.dossier_id)
-        if dossier is not None and dossier.statut in STATUTS_ACTIFS:
-            dossier.statut = LocationDossierStatut.CANDIDAT_RETENU.value
-            dossier.updated_at = _now()
-    # Une visite qui n'aboutit pas (faite/absent/annulée sans retenir) et
-    # plus rien de planifié → le dossier recule à « Annonce publiée ».
-    if data.get("statut") in ("faite", "absent", "annulee") or (
-        data.get("retenu") is False
-    ):
-        await _regress_si_plus_de_visites(db, obj.dossier_id)
-    obj.updated_at = _now()
-    await db.commit()
-    await db.refresh(obj)
-    return VisiteRead.model_validate(obj)
-
-
-@router.delete(
-    "/locations/visites/{visite_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-)
-async def delete_visite(
-    visite_id: int, db: DBSession, user: CurrentUser
-) -> None:
-    _require_volet(user)
-    obj = await db.get(LocationVisite, visite_id)
-    if obj is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Visite introuvable.")
-    dossier_id = obj.dossier_id
-    await db.delete(obj)
-    await db.flush()
-    await _regress_si_plus_de_visites(db, dossier_id)
-    await db.commit()

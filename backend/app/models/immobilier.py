@@ -480,13 +480,16 @@ class ImmCommunication(Base):
 
 
 class LocationDossierStatut(str, Enum):
-    AVIS_RECU = "avis_recu"              # le locataire a confirmé son départ
-    ANNONCE_PUBLIEE = "annonce_publiee"  # l'annonce est en ligne
-    VISITES = "visites"                  # visites en cours
-    CANDIDAT_RETENU = "candidat_retenu"  # candidat choisi, bail à signer
-    BAIL_A_ENVOYER = "bail_a_envoyer"    # locataire créé — bail à faire (CORPIQ)
-    BAIL_ENVOYE = "bail_envoye"          # bail envoyé — attente de signature
-    RELOUE = "reloue"                    # nouveau bail signé
+    """Pipeline « Locations » SIMPLIFIÉ (retour Phil 2026-09-09) : quatre
+    étapes, plus d'annonces ni de candidats/visites/enquêtes dans Kratos
+    — ça se passe ailleurs. Les anciennes valeurs (visites,
+    candidat_retenu, bail_a_envoyer) sont traduites, cf.
+    ``services.locatif_depart.LOCATION_STATUTS_LEGACY``."""
+
+    AVIS_RECU = "avis_recu"              # « À louer » : départ confirmé / unité libre
+    ANNONCE_PUBLIEE = "annonce_publiee"  # « Affiché » : l'annonce est en ligne
+    BAIL_ENVOYE = "bail_envoye"          # « Bail en signature » : locataire lié
+    RELOUE = "reloue"                    # nouveau bail signé au dossier
     ANNULE = "annule"                    # départ annulé / logement retiré
 
 
@@ -542,7 +545,10 @@ class LocationDossier(Base, TimestampUpdateMixin):
 
 
 class LocationAnnonce(Base, TimestampUpdateMixin):
-    """Annonce publiée pour un dossier de relocation (suivi manuel)."""
+    """Annonce publiée pour un dossier de relocation (suivi manuel).
+
+    ⚠️ Plus exposée depuis la Location simplifiée (2026-09-09) : la
+    table reste pour les données existantes, aucun endpoint ne l'écrit."""
 
     __tablename__ = "imm_location_annonces"
 
@@ -561,7 +567,10 @@ class LocationAnnonce(Base, TimestampUpdateMixin):
 
 
 class LocationVisite(Base, TimestampUpdateMixin):
-    """Visite planifiée/faite avec un candidat pour un dossier."""
+    """Visite planifiée/faite avec un candidat pour un dossier.
+
+    ⚠️ Plus exposée depuis la Location simplifiée (2026-09-09) : la
+    table reste pour les données existantes, aucun endpoint ne l'écrit."""
 
     __tablename__ = "imm_location_visites"
 

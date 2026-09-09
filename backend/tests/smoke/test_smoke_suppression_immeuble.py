@@ -62,7 +62,7 @@ def _seed(nom, *, avec_paiement=False, locataire_ailleurs=False):
             s.add(
                 LocationDossier(
                     logement_id=lg.id,
-                    statut=LocationDossierStatut.CANDIDAT_RETENU.value,
+                    statut=LocationDossierStatut.BAIL_ENVOYE.value,
                     nouveau_bail_id=b.id,
                 )
             )

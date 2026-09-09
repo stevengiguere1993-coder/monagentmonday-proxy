@@ -5,11 +5,13 @@
  * - page /immobilier/locations (tous les immeubles, filtre)
  * - onglet « Locations » de la fiche immeuble (prop immeubleId)
  *
- * Colonnes = étapes de la relocation. Une carte se déplace par drag &
- * drop (ou via le sélecteur de statut dans sa fiche). Clic sur une
- * carte → fiche complète : annonces, visites & candidats (avec ENQUÊTES
- * de prélocation), dépôt du locataire sortant, notes, et conversion du
- * candidat retenu en LOCATAIRE + BAIL préremplis (avec confirmation).
+ * Location SIMPLIFIÉE (retour Phil 2026-09-09) — quatre colonnes :
+ * « À louer » → « Affiché » → « Bail en signature » → « Reloué ».
+ * Plus d'annonces, de visites, de candidats ni d'enquêtes ici : ça se
+ * passe hors de Kratos. Sur une carte, on LIE un locataire (déjà
+ * client, ou créé sur place) : son bail proposé est créé et la carte
+ * passe à « Bail en signature ». Le bail signé (PDF du gestionnaire, ou
+ * bientôt notre système interne) fait passer la carte à « Reloué ».
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -17,16 +19,15 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
-  ExternalLink,
   FileSignature,
   KeyRound,
   Loader2,
   Megaphone,
   Plus,
   ShieldCheck,
-  Star,
   Timer,
   Trash2,
+  UserPlus,
   Users,
   X
 } from "lucide-react";
@@ -36,34 +37,6 @@ import { authedFetch } from "@/lib/auth";
 import {
   TalFormDropdown
 } from "@/components/immobilier/tal-avis";
-
-type Annonce = {
-  id: number;
-  dossier_id: number;
-  plateforme: string;
-  url: string | null;
-  publiee_le: string | null;
-  active: boolean;
-};
-
-type Visite = {
-  id: number;
-  dossier_id: number;
-  quand: string | null;
-  candidat_nom: string;
-  candidat_contact: string | null; // legacy (tél/courriel mélangés)
-  candidat_email: string | null;
-  candidat_phone: string | null;
-  statut: string; // planifiee | faite | absent | annulee
-  interesse: boolean | null;
-  notes: string | null;
-  enquete_credit: boolean | null;
-  enquete_references: boolean | null;
-  enquete_emploi: boolean | null;
-  enquete_notes: string | null;
-  retenu: boolean;
-  locataire_id?: number | null;
-};
 
 type Dossier = {
   id: number;
@@ -81,51 +54,65 @@ type Dossier = {
   notes: string | null;
   depot_sortant: number | null;
   depot_sortant_rendu_le: string | null;
+  //: Locataire LIÉ (bail proposé) — null tant qu'on n'a lié personne.
   nouveau_bail_id: number | null;
   nouveau_locataire_id: number | null;
+  nouveau_locataire_nom: string | null;
+  nouveau_bail_date_debut: string | null;
+  nouveau_bail_loyer: number | null;
+  //: PDF du bail signé au dossier (null = en attente de signature).
+  nouveau_bail_document_id: number | null;
   gestion_externe?: boolean;
-  annonces: Annonce[];
-  visites: Visite[];
 };
 
 type Overview = {
   rows: Dossier[];
   nb_actifs: number;
-  nb_visites_a_venir: number;
+  nb_a_louer: number;
+  nb_affiches: number;
+  nb_en_signature: number;
   nb_reloues_90j: number;
   jours_vacants_moyens: number | null;
 };
 
-const COLUMNS: Array<{ id: string; label: string; dot: string }> = [
-  { id: "avis_recu", label: "Départ confirmé", dot: "bg-amber-400" },
-  { id: "annonce_publiee", label: "Annonce publiée", dot: "bg-sky-400" },
-  { id: "visites", label: "Visite prévue", dot: "bg-violet-400" },
-  { id: "candidat_retenu", label: "Candidat retenu", dot: "bg-blue-400" },
-  { id: "bail_a_envoyer", label: "Bail à envoyer", dot: "bg-orange-400" },
-  { id: "bail_envoye", label: "Bail envoyé — à signer", dot: "bg-fuchsia-400" },
-  { id: "reloue", label: "Reloué", dot: "bg-emerald-400" }
+const COLUMNS: Array<{
+  id: string;
+  label: string;
+  dot: string;
+  hint: string;
+}> = [
+  {
+    id: "avis_recu",
+    label: "À louer",
+    dot: "bg-amber-400",
+    hint: "Départ confirmé ou unité libre — rien n'est encore affiché."
+  },
+  {
+    id: "annonce_publiee",
+    label: "Affiché",
+    dot: "bg-sky-400",
+    hint: "L'annonce est en ligne (Marketplace, Kijiji…) — hors Kratos."
+  },
+  {
+    id: "bail_envoye",
+    label: "Bail en signature",
+    dot: "bg-fuchsia-400",
+    hint: "Un locataire est lié ; son bail proposé attend la signature."
+  },
+  {
+    id: "reloue",
+    label: "Reloué",
+    dot: "bg-emerald-400",
+    hint: "Le bail signé est au dossier."
+  }
 ];
 
-const STATUTS_ACTIFS = [
-  "avis_recu",
-  "annonce_publiee",
-  "visites",
-  "candidat_retenu",
-  "bail_a_envoyer",
-  "bail_envoye"
-];
+const STATUTS_ACTIFS = ["avis_recu", "annonce_publiee", "bail_envoye"];
 
 const STATUT_LABEL: Record<string, string> = Object.fromEntries(
   COLUMNS.map((c) => [c.id, c.label])
 );
 STATUT_LABEL.annule = "Annulé";
-
-const VISITE_STATUTS: Array<{ id: string; label: string }> = [
-  { id: "planifiee", label: "Planifiée" },
-  { id: "faite", label: "Faite" },
-  { id: "absent", label: "Absent" },
-  { id: "annulee", label: "Annulée" }
-];
 
 function money(n: number | null | undefined): string {
   if (n == null) return "—";
@@ -188,12 +175,12 @@ export function LocationsBoard({
   const [data, setData] = useState<Overview | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [openId, setOpenId] = useState<number | null>(null);
-  //: Dossier dont la fiche doit s'ouvrir DIRECTEMENT sur la conversion
-  //: du candidat — quand on a glissé la carte vers une colonne qui
-  //: exige un bail sans qu'il existe encore.
-  const [convertirPour, setConvertirPour] = useState<number | null>(null);
+  //: Dossier dont la fiche doit s'ouvrir DIRECTEMENT sur « Lier un
+  //: locataire » — quand on a glissé la carte vers une colonne qui
+  //: exige un locataire sans qu'il y en ait encore (le frein FAIT au
+  //: lieu de bloquer, retour Phil 2026-08-20).
+  const [lierPour, setLierPour] = useState<number | null>(null);
   const [showCreate, setShowCreate] = useState(false);
-  const [showPickBail, setShowPickBail] = useState(false);
   const [importBailFor, setImportBailFor] = useState<Dossier | null>(null);
   const [showHistorique, setShowHistorique] = useState(false);
   const [immeubleFilter, setImmeubleFilter] = useState<number | "all">("all");
@@ -292,19 +279,25 @@ export function LocationsBoard({
 
   return (
     <div className="space-y-4">
-      {/* KPIs */}
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      {/* KPIs — une tuile par colonne + la vacance moyenne */}
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
         <KpiTile
           icon={<KeyRound className="h-4 w-4" />}
-          label="À relouer"
-          value={String(data?.nb_actifs ?? "…")}
+          label="À louer"
+          value={String(data?.nb_a_louer ?? "…")}
           cls="border-amber-500/30 bg-amber-500/5 text-amber-200"
         />
         <KpiTile
-          icon={<Users className="h-4 w-4" />}
-          label="Visites à venir"
-          value={String(data?.nb_visites_a_venir ?? "…")}
-          cls="border-violet-500/30 bg-violet-500/5 text-violet-200"
+          icon={<Megaphone className="h-4 w-4" />}
+          label="Affichés"
+          value={String(data?.nb_affiches ?? "…")}
+          cls="border-sky-500/30 bg-sky-500/5 text-sky-200"
+        />
+        <KpiTile
+          icon={<FileSignature className="h-4 w-4" />}
+          label="Bail en signature"
+          value={String(data?.nb_en_signature ?? "…")}
+          cls="border-fuchsia-500/30 bg-fuchsia-500/5 text-fuchsia-200"
         />
         <KpiTile
           icon={<Timer className="h-4 w-4" />}
@@ -316,7 +309,7 @@ export function LocationsBoard({
                 ? String(data.jours_vacants_moyens)
                 : "—"
           }
-          cls="border-sky-500/30 bg-sky-500/5 text-sky-200"
+          cls="border-brand-700 bg-brand-900/40 text-white/80"
         />
         <KpiTile
           icon={<Check className="h-4 w-4" />}
@@ -348,16 +341,8 @@ export function LocationsBoard({
         ) : null}
         <button
           type="button"
-          onClick={() => setShowPickBail(true)}
-          className="btn-secondary btn-sm ml-auto"
-          title="Ouvre la fiche d'un dossier dont le candidat est retenu, pour le convertir en locataire (le bail se prépare ensuite dans la CORPIQ)"
-        >
-          <FileSignature className="h-3.5 w-3.5" /> Convertir un candidat
-        </button>
-        <button
-          type="button"
           onClick={() => setShowCreate(true)}
-          className="btn-outline-accent btn-sm"
+          className="btn-outline-accent btn-sm ml-auto"
           title="Ouvre un dossier de relocation sur un logement (départ à venir ou logement déjà vacant). Ne vide PAS le logement : son statut suit ses baux."
         >
           <Plus className="h-3.5 w-3.5" /> Nouvelle relocation
@@ -396,34 +381,28 @@ export function LocationsBoard({
                   if (!Number.isFinite(id) || id <= 0) return;
                   const d = rows.find((r) => r.id === id);
                   if (!d || d.statut === col.id) return;
-                  // Reloué = bail signé (CORPIQ) importé OBLIGATOIRE.
+                  // Reloué = bail signé importé OBLIGATOIRE.
                   if (col.id === "reloue" && d.nouveau_bail_id) {
                     setImportBailFor(d);
                     return;
                   }
-                  // « Bail à envoyer » / « Bail envoyé » veulent dire
-                  // « locataire créé, bail en cours » : y arriver sans
-                  // bail donnerait une carte qui ment sur son état.
-                  //
-                  // Mais REFUSER était incohérent (retour Phil
-                  // 2026-08-20) : le frein doit FAIRE, pas bloquer. Si
-                  // un candidat est retenu, on ouvre la conversion —
-                  // c'est elle qui crée le bail, et la carte avance
-                  // ensuite d'elle-même. Même geste que pour « Reloué »,
-                  // qui ouvre l'import au lieu de refuser.
+                  // « Bail en signature » / « Reloué » veulent dire
+                  // « un locataire est lié » : y arriver sans locataire
+                  // donnerait une carte qui ment. Le frein FAIT au lieu
+                  // de bloquer (retour Phil 2026-08-20) : on ouvre
+                  // « Lier un locataire », la carte avance ensuite
+                  // d'elle-même.
                   if (
-                    (col.id === "bail_a_envoyer" ||
-                      col.id === "bail_envoye") &&
-                    d.nouveau_bail_id == null &&
-                    d.visites.some((v) => v.retenu)
+                    (col.id === "bail_envoye" || col.id === "reloue") &&
+                    d.nouveau_bail_id == null
                   ) {
-                    setConvertirPour(d.id);
+                    setLierPour(d.id);
                     setOpenId(d.id);
                     return;
                   }
                   void patchDossier(id, { statut: col.id });
                 }}
-                className={`flex w-60 min-w-[240px] flex-shrink-0 flex-col rounded-xl border bg-brand-900/60 transition ${
+                className={`flex w-72 min-w-[270px] flex-shrink-0 flex-col rounded-xl border bg-brand-900/60 transition ${
                   dragOverCol === col.id
                     ? "border-accent-500"
                     : "border-brand-800"
@@ -434,7 +413,7 @@ export function LocationsBoard({
                     <span className={`h-2 w-2 shrink-0 rounded-full ${col.dot}`} />
                     <h3
                       className="truncate text-sm font-semibold text-white"
-                      title={col.label}
+                      title={col.hint}
                     >
                       {col.label}
                     </h3>
@@ -497,11 +476,11 @@ export function LocationsBoard({
       {selected ? (
         <DossierModal
           d={selected}
-          convertirDemande={convertirPour === selected.id}
-          onConvertirConsomme={() => setConvertirPour(null)}
+          lierDemande={lierPour === selected.id}
+          onLierConsomme={() => setLierPour(null)}
           onClose={() => {
             setOpenId(null);
-            setConvertirPour(null);
+            setLierPour(null);
           }}
           onPatch={(body) => patchDossier(selected.id, body)}
           onMutated={() => void load()}
@@ -510,17 +489,9 @@ export function LocationsBoard({
             setOpenId(null);
             void load();
           }}
-        />
-      ) : null}
-
-      {showPickBail ? (
-        <PickDossierPourBailModal
-          rows={rows}
-          onClose={() => setShowPickBail(false)}
-          onPick={(id) => {
-            setShowPickBail(false);
-            setOpenId(id);
-          }}
+          onImporterBail={(bailId) =>
+            setImportBailFor({ ...selected, nouveau_bail_id: bailId })
+          }
         />
       ) : null}
 
@@ -600,11 +571,6 @@ function DossierCard({
   /** Carte ciblée par `?focus={id}` — surlignée après le défilement. */
   highlighted?: boolean;
 }) {
-  const retenu = d.visites.find((v) => v.retenu);
-  const prochaine = d.visites.find(
-    (v) => v.statut === "planifiee" && v.quand
-  );
-  const annoncesActives = d.annonces.filter((a) => a.active).length;
   const deltaLoyer =
     d.loyer_demande != null && d.loyer_ancien != null && d.loyer_ancien > 0
       ? ((d.loyer_demande - d.loyer_ancien) / d.loyer_ancien) * 100
@@ -622,15 +588,17 @@ function DossierCard({
       ? `Reloué le ${fmtDate(d.reloue_le)}`
       : `Départ : ${fmtDate(d.date_depart)}`,
     d.locataire_sortant ? `Sortant : ${d.locataire_sortant}` : "",
+    d.nouveau_locataire_nom
+      ? `Locataire lié : ${d.nouveau_locataire_nom}${
+          d.nouveau_bail_document_id ? " (bail signé)" : " (bail à signer)"
+        }`
+      : "",
     `Loyer demandé : ${money(d.loyer_demande)}${
       d.loyer_ancien != null ? ` (ancien : ${money(d.loyer_ancien)})` : ""
     }`
   ]
     .filter(Boolean)
     .join("\n");
-  // Pied minimal : rien du tout si aucun compteur ni badge à montrer.
-  const aUnPied =
-    annoncesActives > 0 || d.visites.length > 0 || !!retenu || !!prochaine;
 
   return (
     <button
@@ -671,30 +639,23 @@ function DossierCard({
       {showImmeuble ? (
         <p className="truncate text-[11px] text-white/50">{d.immeuble_name}</p>
       ) : null}
-      {aUnPied ? (
+      {d.nouveau_locataire_nom ? (
         <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-white/50">
-          {annoncesActives > 0 ? (
-            <span title="Annonces actives">
-              <Megaphone className="mr-0.5 inline h-3 w-3" />
-              {annoncesActives}
-            </span>
-          ) : null}
-          {d.visites.length > 0 ? (
-            <span title="Visites / candidats">
-              <Users className="mr-0.5 inline h-3 w-3" />
-              {d.visites.length}
-            </span>
-          ) : null}
-          {retenu ? (
-            <span className="badge badge-blue max-w-full">
-              <Star className="mr-0.5 inline h-2.5 w-2.5 shrink-0" />
-              <span className="min-w-0 truncate">{retenu.candidat_nom}</span>
-            </span>
-          ) : prochaine ? (
-            <span className="badge badge-violet">
-              {fmtDateTime(prochaine.quand)}
-            </span>
-          ) : null}
+          <span
+            className={`badge max-w-full ${
+              d.nouveau_bail_document_id || d.statut === "reloue"
+                ? "badge-emerald"
+                : "badge-violet"
+            }`}
+            title={
+              d.nouveau_bail_document_id
+                ? "Bail signé au dossier"
+                : "Bail proposé — en attente de signature"
+            }
+          >
+            <Users className="mr-0.5 inline h-2.5 w-2.5 shrink-0" />
+            <span className="min-w-0 truncate">{d.nouveau_locataire_nom}</span>
+          </span>
         </div>
       ) : null}
     </button>
@@ -710,8 +671,9 @@ function DossierModal({
   onMutated,
   onError,
   onDeleted,
-  convertirDemande,
-  onConvertirConsomme
+  onImporterBail,
+  lierDemande,
+  onLierConsomme
 }: {
   d: Dossier;
   onClose: () => void;
@@ -719,44 +681,32 @@ function DossierModal({
   onMutated: () => void;
   onError: (msg: string) => void;
   onDeleted: () => void;
-  /** La carte a été glissée vers une colonne qui exige un bail : on
-   *  ouvre directement la conversion du candidat retenu. */
-  convertirDemande?: boolean;
-  onConvertirConsomme?: () => void;
+  /** Ouvre l'import du bail signé (→ « Reloué ») pour ce bail. */
+  onImporterBail: (bailId: number) => void;
+  /** La carte a été glissée vers une colonne qui exige un locataire :
+   *  on ouvre directement « Lier un locataire ». */
+  lierDemande?: boolean;
+  onLierConsomme?: () => void;
 }) {
   const [notesDraft, setNotesDraft] = useState(d.notes || "");
   const [savingNotes, setSavingNotes] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [showConvert, setShowConvert] = useState(false);
+  const [showLier, setShowLier] = useState(false);
 
-  //: Ouverture directe sur la conversion quand la carte a été glissée
-  //: vers une colonne qui exige un bail : le frein FAIT au lieu de
-  //: bloquer (retour Phil 2026-08-20).
   useEffect(() => {
-    if (convertirDemande) {
-      setShowConvert(true);
-      onConvertirConsomme?.();
+    if (lierDemande) {
+      setShowLier(true);
+      onLierConsomme?.();
     }
-  }, [convertirDemande, onConvertirConsomme]);
+  }, [lierDemande, onLierConsomme]);
 
-  const [annPlateforme, setAnnPlateforme] = useState("Marketplace");
-  const [visNom, setVisNom] = useState("");
-  const [visEmail, setVisEmail] = useState("");
-  const [visPhone, setVisPhone] = useState("");
-  const [visQuand, setVisQuand] = useState("");
+  const actif = d.statut !== "reloue" && d.statut !== "annule";
 
-  const retenu = d.visites.find((v) => v.retenu) || null;
-
-  async function api(
-    path: string,
-    method: string,
-    body?: Record<string, unknown>
-  ): Promise<boolean> {
+  async function supprimer(): Promise<boolean> {
     setBusy(true);
     try {
-      const r = await authedFetch(`/api/v1/immobilier/locations${path}`, {
-        method,
-        ...(body ? { body: JSON.stringify(body) } : {})
+      const r = await authedFetch(`/api/v1/immobilier/locations/${d.id}`, {
+        method: "DELETE"
       });
       if (!r.ok) {
         const t = await r.text();
@@ -776,7 +726,7 @@ function DossierModal({
       onClick={onClose}
     >
       <div
-        className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-2xl border border-brand-800 bg-brand-950 p-6"
+        className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-brand-800 bg-brand-950 p-6"
         onClick={(e) => e.stopPropagation()}
       >
         {/* En-tête */}
@@ -795,7 +745,9 @@ function DossierModal({
                     ? "badge-emerald"
                     : d.statut === "annule"
                       ? "badge-neutral"
-                      : "badge-amber"
+                      : d.statut === "bail_envoye"
+                        ? "badge-violet"
+                        : "badge-amber"
                 }`}
               >
                 {STATUT_LABEL[d.statut] ?? d.statut}
@@ -844,10 +796,27 @@ function DossierModal({
                 ) : null}
                 <button
                   type="button"
-                  onClick={() =>
-                    !isActive ? void onPatch({ statut: col.id }) : undefined
-                  }
-                  title={`Passer à « ${col.label} »`}
+                  onClick={() => {
+                    if (isActive) return;
+                    // Même logique que le glisser-déposer : sans
+                    // locataire lié, « Bail en signature » et
+                    // « Reloué » ouvrent « Lier un locataire » ; avec
+                    // un locataire, « Reloué » passe par l'import du
+                    // bail signé.
+                    if (
+                      (col.id === "bail_envoye" || col.id === "reloue") &&
+                      d.nouveau_bail_id == null
+                    ) {
+                      setShowLier(true);
+                      return;
+                    }
+                    if (col.id === "reloue" && d.nouveau_bail_id) {
+                      onImporterBail(d.nouveau_bail_id);
+                      return;
+                    }
+                    void onPatch({ statut: col.id });
+                  }}
+                  title={`${col.hint}\nPasser à « ${col.label} »`}
                   className={`flex min-w-0 flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-2 py-1.5 text-[11px] font-semibold transition ${
                     isActive
                       ? "bg-accent-500/15 text-accent-500 ring-1 ring-inset ring-accent-500/40"
@@ -953,50 +922,76 @@ function DossierModal({
           </div>
         ) : null}
 
-        {/* Conversion candidat retenu → locataire + bail (CORPIQ) */}
-        {d.nouveau_bail_id == null &&
-        d.statut !== "reloue" &&
-        d.statut !== "annule" ? (
+        {/* Locataire lié — le cœur de la fiche */}
+        {d.nouveau_bail_id == null && actif ? (
           <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">
-            <FileSignature className="h-3.5 w-3.5" />
-            {retenu ? (
-              <>
-                Candidat retenu : <strong>{retenu.candidat_nom}</strong>
-              </>
-            ) : (
-              <>Retiens un candidat (⭐ dans la liste) pour créer son bail.</>
-            )}
+            <UserPlus className="h-3.5 w-3.5" />
+            Aucun locataire lié pour l&apos;instant.
             <button
               type="button"
-              disabled={!retenu}
-              onClick={() => setShowConvert(true)}
-              className="ml-auto rounded-md border border-emerald-400/40 bg-emerald-500/15 px-2.5 py-1 font-semibold text-emerald-200 hover:bg-emerald-500/25 disabled:opacity-40"
+              onClick={() => setShowLier(true)}
+              className="ml-auto rounded-md border border-emerald-400/40 bg-emerald-500/15 px-2.5 py-1 font-semibold text-emerald-200 hover:bg-emerald-500/25"
             >
-              Créer le locataire + bail
+              Lier un locataire
             </button>
           </div>
         ) : d.nouveau_bail_id != null && d.statut !== "reloue" ? (
-          <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-orange-400/30 bg-orange-500/10 px-3 py-2 text-xs text-orange-200">
-            <FileSignature className="h-3.5 w-3.5" />
-            Locataire créé — prépare le bail dans la CORPIQ, puis
-            glisse la carte : « Bail à envoyer » → « Bail envoyé » →
-            « Reloué » (import du bail signé obligatoire).
-            {d.nouveau_locataire_id != null ? (
-              <Link
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                href={
-                  `/immobilier/locataires/${d.nouveau_locataire_id}` as any
-                }
-                className="ml-auto rounded-md border border-orange-400/40 bg-orange-500/15 px-2 py-1 text-[11px] font-semibold text-orange-200 hover:bg-orange-500/25"
+          <div className="mt-3 rounded-lg border border-fuchsia-400/30 bg-fuchsia-500/10 px-3 py-2 text-xs text-fuchsia-100">
+            <div className="flex flex-wrap items-center gap-2">
+              <FileSignature className="h-3.5 w-3.5" />
+              Locataire lié :{" "}
+              <strong>{d.nouveau_locataire_nom || "—"}</strong>
+              {d.nouveau_bail_date_debut ? (
+                <span className="text-fuchsia-200/70">
+                  · bail du {fmtDate(d.nouveau_bail_date_debut)}
+                </span>
+              ) : null}
+              {d.nouveau_bail_loyer != null ? (
+                <span className="text-fuchsia-200/70">
+                  · {money(d.nouveau_bail_loyer)}/mois
+                </span>
+              ) : null}
+              <span className="badge badge-violet ml-auto">
+                {d.nouveau_bail_document_id
+                  ? "bail signé au dossier"
+                  : "en attente du bail signé"}
+              </span>
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => onImporterBail(d.nouveau_bail_id as number)}
+                className="rounded-md border border-emerald-400/40 bg-emerald-500/15 px-2.5 py-1 font-semibold text-emerald-200 hover:bg-emerald-500/25"
               >
-                Fiche du locataire
-              </Link>
-            ) : null}
-            <DesistementButton d={d} onDone={onMutated} />
+                <FileSignature className="mr-1 inline h-3.5 w-3.5" />
+                Joindre le bail signé → Reloué
+              </button>
+              {d.nouveau_locataire_id != null ? (
+                <Link
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  href={
+                    `/immobilier/locataires/${d.nouveau_locataire_id}` as any
+                  }
+                  className="rounded-md border border-fuchsia-400/40 bg-fuchsia-500/15 px-2 py-1 text-[11px] font-semibold text-fuchsia-100 hover:bg-fuchsia-500/25"
+                >
+                  Fiche du locataire
+                </Link>
+              ) : null}
+              <span className="ml-auto">
+                <DesistementButton d={d} onDone={onMutated} />
+              </span>
+            </div>
           </div>
         ) : d.statut === "reloue" && d.nouveau_bail_id ? (
           <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">
-            <Check className="h-3.5 w-3.5" /> Reloué — bail au dossier.
+            <Check className="h-3.5 w-3.5" /> Reloué
+            {d.nouveau_locataire_nom ? (
+              <>
+                {" "}
+                à <strong>{d.nouveau_locataire_nom}</strong>
+              </>
+            ) : null}{" "}
+            — bail au dossier.
             <TalFormDropdown bailId={d.nouveau_bail_id} />
             {d.nouveau_locataire_id != null ? (
               <Link
@@ -1009,7 +1004,6 @@ function DossierModal({
                 Fiche du locataire
               </Link>
             ) : null}
-            <DesistementButton d={d} onDone={onMutated} />
             <Link
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
               href={
@@ -1022,250 +1016,88 @@ function DossierModal({
           </div>
         ) : null}
 
-        {d.statut !== "reloue" ? (
-          /* Retour Phil 2026-08-19 : « j'aimerais quelque chose qui
-             informe que pour uploader un bail, c'est en faisant passer
-             la fiche à la colonne Reloué ». Le message existait, mais
-             seulement une fois arrivé à « Bail à envoyer » — donc trop
-             tard pour celui qui se demande où est le bouton d'import. */
+        {actif ? (
           <p className="mt-3 rounded-lg border border-brand-800 bg-brand-950/60 px-3 py-2 text-[11px] text-white/50">
-            📄 Le bail signé s&apos;importe en faisant passer cette fiche
-            à la colonne <b className="text-white/75">« Reloué »</b> —
-            il n&apos;y a pas de bouton d&apos;import ici. C&apos;est ce
-            passage qui exige le PDF, et c&apos;est ce qui garantit
-            qu&apos;aucun locataire n&apos;entre sans bail au dossier.
+            📄 Le bail signé (PDF du gestionnaire — ou bientôt notre
+            système de signature) se joint depuis cette fiche ou en
+            glissant la carte à{" "}
+            <b className="text-white/75">« Reloué »</b>. C&apos;est ce qui
+            garantit qu&apos;aucun locataire n&apos;entre sans bail au
+            dossier.
           </p>
         ) : null}
 
-        <div className="mt-4 grid gap-4">
-          {/* Annonces */}
-          <div className="rounded-xl border border-brand-800 bg-brand-900 p-3.5">
-            <h4 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-accent-500">
-              <Megaphone className="h-3.5 w-3.5" /> Annonces
-            </h4>
-            {d.annonces.length === 0 ? (
-              <p className="text-xs text-white/40">Aucune annonce consignée.</p>
-            ) : (
-              <ul className="space-y-1.5">
-                {d.annonces.map((a) => (
-                  <li
-                    key={a.id}
-                    className="flex items-center gap-2 text-xs text-white/75"
-                  >
-                    <span
-                      className={`badge ${a.active ? "badge-sky" : "badge-neutral"}`}
-                    >
-                      {a.plateforme}
-                    </span>
-                    {a.url ? (
-                      <a
-                        href={a.url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex items-center gap-1 text-accent-500 hover:underline"
-                      >
-                        Voir <ExternalLink className="h-3 w-3" />
-                      </a>
-                    ) : null}
-                    <span className="text-white/40">{fmtDate(a.publiee_le)}</span>
-                    <span className="ml-auto flex items-center gap-1">
-                      <button
-                        type="button"
-                        title={a.active ? "Marquer retirée" : "Réactiver"}
-                        onClick={() =>
-                          void api(`/annonces/${a.id}`, "PATCH", {
-                            active: !a.active
-                          })
-                        }
-                        className="rounded px-1.5 py-0.5 text-[10px] font-semibold text-white/50 hover:bg-brand-800 hover:text-white"
-                      >
-                        {a.active ? "Active" : "Retirée"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void api(`/annonces/${a.id}`, "DELETE")}
-                        className="rounded p-1 text-white/30 hover:text-rose-300"
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </button>
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-            <div className="mt-2 flex flex-wrap items-center gap-1.5">
-              <select
-                value={annPlateforme}
-                onChange={(e) => setAnnPlateforme(e.target.value)}
-                className={`${INPUT_CLS} w-auto`}
-              >
-                {["Marketplace", "Kijiji", "LesPAC", "Affiche", "Autre"].map(
-                  (p) => (
-                    <option key={p} value={p}>
-                      {p}
-                    </option>
-                  )
-                )}
-              </select>
-              {/* Le lien de l'annonce a été retiré (retour Phil
-                  2026-08-19 : « je pense pas qu'on a besoin de mettre
-                  l'adresse URL de l'annonce Facebook »). Consigner la
-                  PLATEFORME suffit à savoir où on a publié ; le lien
-                  vieillit mal et personne ne le rouvrait. Les liens
-                  déjà saisis restent affichés. */}
-              <button
-                type="button"
-                disabled={busy}
-                onClick={async () => {
-                  await api(`/${d.id}/annonces`, "POST", {
-                    plateforme: annPlateforme,
-                    url: null
-                  });
-                }}
-                className="btn-secondary btn-sm disabled:opacity-50"
-              >
-                <Plus className="h-3.5 w-3.5" /> Ajouter
-              </button>
-            </div>
-          </div>
-
-          {/* Notes */}
-        </div>
-
-        {/* Visites & candidats (avec enquêtes de prélocation) */}
+        {/* Notes de suivi — EN BAS (retour Phil 2026-08-19) : ce sont
+            des remarques d'appoint. */}
         <div className="mt-4 rounded-xl border border-brand-800 bg-brand-900 p-3.5">
-          <h4 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-accent-500">
-            <Users className="h-3.5 w-3.5" /> Visites &amp; candidats
+          <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-accent-500">
+            Notes de suivi
           </h4>
-          {d.visites.length === 0 ? (
-            <p className="text-xs text-white/40">Aucune visite planifiée.</p>
-          ) : (
-            <ul className="space-y-2">
-              {d.visites.map((v) => (
-                <CandidatRow
-                  key={v.id}
-                  v={v}
-                  bailCree={d.nouveau_bail_id != null}
-                  onApi={api}
-                />
-              ))}
-            </ul>
-          )}
-          <div className="mt-3 grid gap-1.5 border-t border-brand-800 pt-3 sm:grid-cols-2 lg:grid-cols-5">
-            <input
-              value={visNom}
-              onChange={(e) => setVisNom(e.target.value)}
-              placeholder="Nom du candidat"
-              className={`${INPUT_CLS} lg:col-span-1`}
-            />
-            <input
-              type="email"
-              value={visEmail}
-              onChange={(e) => setVisEmail(e.target.value)}
-              placeholder="Courriel"
-              className={INPUT_CLS}
-            />
-            <input
-              value={visPhone}
-              onChange={(e) => setVisPhone(e.target.value)}
-              placeholder="Téléphone"
-              className={INPUT_CLS}
-            />
-            <input
-              type="datetime-local"
-              value={visQuand}
-              onChange={(e) => setVisQuand(e.target.value)}
-              className={INPUT_CLS}
-            />
-            <button
-              type="button"
-              disabled={busy || !visNom.trim()}
-              onClick={async () => {
-                if (
-                  await api(`/${d.id}/visites`, "POST", {
-                    candidat_nom: visNom.trim(),
-                    candidat_email: visEmail.trim() || null,
-                    candidat_phone: visPhone.trim() || null,
-                    quand: visQuand ? new Date(visQuand).toISOString() : null
-                  })
-                ) {
-                  setVisNom("");
-                  setVisEmail("");
-                  setVisPhone("");
-                  setVisQuand("");
-                }
-              }}
-              className="btn-secondary btn-sm disabled:opacity-50"
-            >
-              <Plus className="h-3.5 w-3.5" /> Ajouter
-            </button>
-          </div>
-          <PickLocataireExistant
-            onPick={async (lo) => {
-              await api(`/${d.id}/visites`, "POST", {
-                locataire_id: lo.id,
-                candidat_nom: lo.full_name,
-                quand: null
-              });
-            }}
+          <textarea
+            rows={4}
+            value={notesDraft}
+            onChange={(e) => setNotesDraft(e.target.value)}
+            placeholder="État du logement, peinture à faire, où l'annonce est affichée…"
+            className="block w-full rounded-md border border-brand-800 bg-brand-950 px-3 py-2 text-xs text-white outline-none focus:border-accent-500"
           />
+          <button
+            type="button"
+            disabled={savingNotes || notesDraft === (d.notes || "")}
+            onClick={async () => {
+              setSavingNotes(true);
+              await onPatch({
+                notes: notesDraft.trim() ? notesDraft : null
+              });
+              setSavingNotes(false);
+            }}
+            className="btn-secondary btn-sm mt-1.5 disabled:opacity-40"
+          >
+            {savingNotes ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Check className="h-3.5 w-3.5" />
+            )}
+            Enregistrer
+          </button>
         </div>
 
         {/* Pied de fiche : actions destructives discrètes */}
-        {/* Notes de suivi — EN BAS (retour Phil 2026-08-19) : ce
-            sont des remarques d'appoint, elles ne doivent pas
-            occuper le haut du panneau devant les candidats. */}
-      <div className="rounded-xl border border-brand-800 bg-brand-900 p-3.5">
-        <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-accent-500">
-          Notes de suivi
-        </h4>
-        <textarea
-          rows={5}
-          value={notesDraft}
-          onChange={(e) => setNotesDraft(e.target.value)}
-          placeholder="État du logement, peinture à faire, candidat à relancer…"
-          className="block w-full rounded-md border border-brand-800 bg-brand-950 px-3 py-2 text-xs text-white outline-none focus:border-accent-500"
-        />
-        <button
-          type="button"
-          disabled={savingNotes || notesDraft === (d.notes || "")}
-          onClick={async () => {
-            setSavingNotes(true);
-            await onPatch({
-              notes: notesDraft.trim() ? notesDraft : null
-            });
-            setSavingNotes(false);
-          }}
-          className="btn-secondary btn-sm mt-1.5 disabled:opacity-40"
-        >
-          {savingNotes ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <Check className="h-3.5 w-3.5" />
-          )}
-          Enregistrer
-        </button>
-      </div>
-
         <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-brand-800 pt-3">
           <button
             type="button"
-            title="Efface DÉFINITIVEMENT le dossier, ses annonces et ses visites — pour un dossier créé par erreur"
+            disabled={busy}
+            title="Efface DÉFINITIVEMENT le dossier — pour un dossier créé par erreur"
             onClick={async () => {
               if (
                 window.confirm(
-                  d.nouveau_bail_id != null
-                    ? "⚠️ Supprimer DÉFINITIVEMENT ce dossier ?\n\nLe LOCATAIRE créé à la conversion et son bail seront SUPPRIMÉS eux aussi (annonces et visites incluses)."
-                    : "Supprimer DÉFINITIVEMENT ce dossier de relocation (annonces et visites incluses) ? Pour garder une trace, utilise plutôt « Annuler »."
+                  d.nouveau_bail_id != null && d.statut !== "reloue"
+                    ? "⚠️ Supprimer DÉFINITIVEMENT ce dossier ?\n\nLe bail proposé du locataire lié sera SUPPRIMÉ lui aussi (et sa fiche, si elle a été créée ici)."
+                    : "Supprimer DÉFINITIVEMENT ce dossier de relocation ? Pour garder une trace, utilise plutôt « Annuler »."
                 )
               ) {
-                if (await api(`/${d.id}`, "DELETE")) onDeleted();
+                if (await supprimer()) onDeleted();
               }
             }}
-            className="inline-flex items-center gap-1 text-xs text-rose-300/60 hover:text-rose-300"
+            className="inline-flex items-center gap-1 text-xs text-rose-300/60 hover:text-rose-300 disabled:opacity-50"
           >
             <Trash2 className="h-3 w-3" /> Supprimer définitivement
           </button>
+          {actif ? (
+            <button
+              type="button"
+              onClick={() => {
+                if (
+                  window.confirm(
+                    "Annuler ce dossier de relocation ? La carte passe dans « Annulés » (trace conservée)."
+                  )
+                )
+                  void onPatch({ statut: "annule" });
+              }}
+              className="text-xs text-white/40 hover:text-white/70"
+            >
+              Annuler le dossier
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={onClose}
@@ -1276,14 +1108,18 @@ function DossierModal({
         </div>
       </div>
 
-      {showConvert && retenu ? (
-        <ConvertModal
+      {showLier ? (
+        <LierLocataireModal
           d={d}
-          candidat={retenu}
-          onClose={() => setShowConvert(false)}
+          onClose={() => setShowLier(false)}
           onDone={() => {
-            setShowConvert(false);
+            setShowLier(false);
             onMutated();
+          }}
+          onImporterBail={(bailId) => {
+            setShowLier(false);
+            onMutated();
+            onImporterBail(bailId);
           }}
         />
       ) : null}
@@ -1291,299 +1127,20 @@ function DossierModal({
   );
 }
 
-// ─── Ligne candidat (statut visite + enquêtes + retenir) ────────────────
+// ─── « Lier un locataire » (existant ou créé sur place) ─────────────────
 
-function TriCheck({
-  label,
-  value,
-  onCycle
-}: {
-  label: string;
-  value: boolean | null;
-  onCycle: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onCycle}
-      title={`${label} : cliquer pour changer (— → OK → Refusé)`}
-      className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
-        value === true
-          ? "bg-emerald-500/15 text-emerald-300"
-          : value === false
-            ? "bg-rose-500/15 text-rose-300"
-            : "bg-brand-800/60 text-white/40 hover:text-white/70"
-      }`}
-    >
-      {label} {value === true ? "✓" : value === false ? "✗" : "·"}
-    </button>
-  );
-}
-
-function CandidatRow({
-  v,
-  bailCree,
-  onApi
-}: {
-  v: Visite;
-  /** Un locataire a été créé depuis ce dossier — le candidat retenu
-   *  ne se dé-retient plus (passer par « Désistement »). */
-  bailCree?: boolean;
-  onApi: (
-    path: string,
-    method: string,
-    body?: Record<string, unknown>
-  ) => Promise<boolean>;
-}) {
-  const cycle = (cur: boolean | null) =>
-    cur === null ? true : cur === true ? false : null;
-  //: Une enquête déjà renseignée reste visible : la replier ferait
-  //: perdre une information de diligence déjà acquise.
-  const enqueteRemplie =
-    v.enquete_credit !== null ||
-    v.enquete_references !== null ||
-    v.enquete_emploi !== null;
-  const [enquetesOuvertes, setEnquetesOuvertes] = useState(false);
-
-  return (
-    <li
-      className={`rounded-lg border p-2.5 ${
-        v.retenu
-          ? "border-blue-400/40 bg-blue-500/10"
-          : "border-brand-800 bg-brand-950/60"
-      }`}
-    >
-      <div className="flex flex-wrap items-center gap-2 text-xs text-white/75">
-        {v.retenu ? <Star className="h-3.5 w-3.5 text-blue-300" /> : null}
-        <span className="font-medium text-white">{v.candidat_nom}</span>
-        {v.candidat_email ? (
-          <span className="text-white/45">{v.candidat_email}</span>
-        ) : null}
-        {v.candidat_phone ? (
-          <span className="text-white/45">{v.candidat_phone}</span>
-        ) : null}
-        {!v.candidat_email && !v.candidat_phone && v.candidat_contact ? (
-          <span className="text-white/45">{v.candidat_contact}</span>
-        ) : null}
-        <span className="text-white/40">{fmtDateTime(v.quand)}</span>
-        <span className="ml-auto flex items-center gap-1">
-          <select
-            value={v.statut}
-            onChange={(e) =>
-              void onApi(`/visites/${v.id}`, "PATCH", {
-                statut: e.target.value
-              })
-            }
-            className={`${INPUT_CLS} w-auto py-0.5 text-[11px]`}
-          >
-            {VISITE_STATUTS.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.label}
-              </option>
-            ))}
-          </select>
-          <button
-            type="button"
-            onClick={() => void onApi(`/visites/${v.id}`, "DELETE")}
-            className="rounded p-1 text-white/30 hover:text-rose-300"
-          >
-            <Trash2 className="h-3 w-3" />
-          </button>
-        </span>
-      </div>
-      {/* Prélocation : intérêt + enquêtes + retenir */}
-      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-        <button
-          type="button"
-          title="Le candidat est-il intéressé ?"
-          onClick={() =>
-            void onApi(`/visites/${v.id}`, "PATCH", {
-              interesse: cycle(v.interesse)
-            })
-          }
-          className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
-            v.interesse === true
-              ? "bg-emerald-500/15 text-emerald-300"
-              : v.interesse === false
-                ? "bg-rose-500/15 text-rose-300"
-                : "bg-brand-800/60 text-white/40 hover:text-white/70"
-          }`}
-        >
-          Intéressé {v.interesse === true ? "✓" : v.interesse === false ? "✗" : "·"}
-        </button>
-        {/* Retour Phil 2026-08-19 : « je pense pas que j'ai besoin de
-            mettre les visites et candidats, je pourrais juste mettre
-            celui qui gagne ». Les enquêtes se replient donc derrière un
-            lien — elles restent accessibles (c'est de la diligence
-            réelle, et une enquête déjà remplie s'affiche d'office) mais
-            elles n'occupent plus la ligne de chaque candidat. */}
-        {enquetesOuvertes || enqueteRemplie ? (
-          <>
-            <span className="text-[10px] uppercase tracking-wider text-white/30">
-              Enquêtes :
-            </span>
-            <TriCheck
-              label="Crédit"
-              value={v.enquete_credit}
-              onCycle={() =>
-                void onApi(`/visites/${v.id}`, "PATCH", {
-                  enquete_credit: cycle(v.enquete_credit)
-                })
-              }
-            />
-            <TriCheck
-              label="Références"
-              value={v.enquete_references}
-              onCycle={() =>
-                void onApi(`/visites/${v.id}`, "PATCH", {
-                  enquete_references: cycle(v.enquete_references)
-                })
-              }
-            />
-            <TriCheck
-              label="Emploi"
-              value={v.enquete_emploi}
-              onCycle={() =>
-                void onApi(`/visites/${v.id}`, "PATCH", {
-                  enquete_emploi: cycle(v.enquete_emploi)
-                })
-              }
-            />
-          </>
-        ) : (
-          <button
-            type="button"
-            onClick={() => setEnquetesOuvertes(true)}
-            className="rounded px-1.5 py-0.5 text-[10px] text-white/35 underline decoration-dotted underline-offset-2 hover:text-white/70"
-          >
-            + Enquêtes
-          </button>
-        )}
-        <button
-          type="button"
-          disabled={!!(v.retenu && bailCree)}
-          title={
-            v.retenu && bailCree
-              ? "Locataire déjà créé — passe par « Désistement » pour annuler"
-              : v.retenu
-                ? "Ne plus retenir ce candidat"
-                : "Retenir ce candidat pour le logement (fait avancer le dossier)"
-          }
-          onClick={() =>
-            void onApi(`/visites/${v.id}`, "PATCH", { retenu: !v.retenu })
-          }
-          className={`ml-auto rounded-md border px-2 py-0.5 text-[10px] font-semibold disabled:cursor-not-allowed disabled:opacity-50 ${
-            v.retenu
-              ? "border-blue-400/40 bg-blue-500/15 text-blue-200"
-              : "border-white/10 text-white/50 hover:bg-brand-800 hover:text-white"
-          }`}
-        >
-          <Star className="mr-1 inline h-3 w-3" />
-          {v.retenu ? "Retenu" : "Retenir"}
-        </button>
-      </div>
-      {/* Notes du candidat + notes d'enquête */}
-      <InlineNote
-        label="Notes du candidat"
-        placeholder="Impressions après la visite, besoins particuliers, à relancer…"
-        value={v.notes}
-        onSave={(txt) =>
-          onApi(`/visites/${v.id}`, "PATCH", { notes: txt })
-        }
-      />
-      <InlineNote
-        label="Notes d'enquête"
-        placeholder="Résultat de l'enquête de crédit, références du proprio précédent, emploi vérifié…"
-        value={v.enquete_notes}
-        onSave={(txt) =>
-          onApi(`/visites/${v.id}`, "PATCH", { enquete_notes: txt })
-        }
-      />
-    </li>
-  );
-}
-
-function InlineNote({
-  label,
-  placeholder,
-  value,
-  onSave
-}: {
-  label: string;
-  placeholder: string;
-  value: string | null;
-  onSave: (txt: string | null) => Promise<boolean>;
-}) {
-  const [open, setOpen] = useState(false);
-  const [draft, setDraft] = useState(value || "");
-  if (!open) {
-    return (
-      <button
-        type="button"
-        onClick={() => {
-          setDraft(value || "");
-          setOpen(true);
-        }}
-        className="mt-1 block text-left text-[10px] text-white/35 hover:text-white/70"
-      >
-        {value
-          ? `${label} : ${value.slice(0, 70)}${value.length > 70 ? "…" : ""}`
-          : `+ ${label}`}
-      </button>
-    );
-  }
-  return (
-    <div className="mt-1.5">
-      <textarea
-        rows={2}
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        placeholder={placeholder}
-        className="block w-full rounded-md border border-brand-800 bg-brand-950 px-2 py-1.5 text-[11px] text-white outline-none focus:border-accent-500"
-      />
-      <div className="mt-1 flex gap-1.5">
-        <button
-          type="button"
-          onClick={async () => {
-            if (await onSave(draft.trim() ? draft : null)) setOpen(false);
-          }}
-          className="btn-secondary btn-xs"
-        >
-          <Check className="h-3 w-3" /> OK
-        </button>
-        <button
-          type="button"
-          onClick={() => setOpen(false)}
-          className="btn-ghost btn-xs"
-        >
-          Annuler
-        </button>
-      </div>
-    </div>
-  );
-}
-
-// ─── Conversion candidat retenu → locataire + bail ──────────────────────
-
-function ConvertModal({
+function LierLocataireModal({
   d,
-  candidat,
   onClose,
-  onDone
+  onDone,
+  onImporterBail
 }: {
   d: Dossier;
-  candidat: Visite;
   onClose: () => void;
   onDone: () => void;
+  /** Après la liaison : joindre tout de suite le bail signé (PDF). */
+  onImporterBail: (bailId: number) => void;
 }) {
-  // Préremplissage : courriel + téléphone du candidat (champs distincts) ;
-  // repli sur le vieux champ contact mélangé pour les données existantes.
-  const contact = (candidat.candidat_contact || "").trim();
-  const isEmail = contact.includes("@");
-  const prefillEmail =
-    (candidat.candidat_email || "").trim() || (isEmail ? contact : "");
-  const prefillPhone =
-    (candidat.candidat_phone || "").trim() || (isEmail ? "" : contact);
   const defaultDebut = (() => {
     if (d.date_depart) {
       const dt = new Date(`${d.date_depart}T00:00:00`);
@@ -1594,9 +1151,9 @@ function ConvertModal({
     return new Date().toISOString().slice(0, 10);
   })();
 
-  const [nom, setNom] = useState(candidat.candidat_nom);
-  const [email, setEmail] = useState(prefillEmail);
-  const [phone, setPhone] = useState(prefillPhone);
+  const [nom, setNom] = useState("");
+  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
   const [dateNaissance, setDateNaissance] = useState("");
   const [nas, setNas] = useState("");
   const [ancienneAdresse, setAncienneAdresse] = useState("");
@@ -1637,16 +1194,13 @@ function ConvertModal({
       }
     })();
   }, [d.immeuble_id, d.logement_id]);
-  // Locataire EXISTANT (déjà client) : le bail s'attache à sa fiche.
-  const [modeExistant, setModeExistant] = useState(
-    candidat.locataire_id != null
-  );
+  // Locataire EXISTANT (déjà client) par défaut : le bail s'attache à
+  // sa fiche — zéro doublon. « Nouveau » crée la fiche sur place.
+  const [modeExistant, setModeExistant] = useState(true);
   const [locatairesDispo, setLocatairesDispo] = useState<
     { id: number; full_name: string }[] | null
   >(null);
-  const [locExistantId, setLocExistantId] = useState<number | null>(
-    candidat.locataire_id ?? null
-  );
+  const [locExistantId, setLocExistantId] = useState<number | null>(null);
   const [locSearch, setLocSearch] = useState("");
   const [employeur, setEmployeur] = useState("");
   const [revenu, setRevenu] = useState("");
@@ -1685,7 +1239,7 @@ function ConvertModal({
     setErr(null);
     try {
       const r = await authedFetch(
-        `/api/v1/immobilier/locations/${d.id}/convertir`,
+        `/api/v1/immobilier/locations/${d.id}/lier-locataire`,
         {
           method: "POST",
           body: JSON.stringify({
@@ -1731,7 +1285,7 @@ function ConvertModal({
       <div className="my-8 w-full max-w-md rounded-2xl border border-brand-800 bg-brand-950 shadow-2xl">
         <div className="flex items-center justify-between border-b border-brand-800 px-5 py-3">
           <h2 className="text-sm font-bold uppercase tracking-wider text-emerald-300">
-            Créer le locataire + bail
+            Lier un locataire
           </h2>
           <button type="button" onClick={onClose} className="btn-ghost btn-xs">
             <X className="h-4 w-4" />
@@ -1740,13 +1294,14 @@ function ConvertModal({
         {done ? (
           <div className="space-y-3 p-5 text-sm text-white/80">
             <p className="flex items-center gap-2 font-semibold text-emerald-300">
-              <Check className="h-4 w-4" /> Locataire et bail créés.
+              <Check className="h-4 w-4" /> Locataire lié — bail proposé
+              créé.
             </p>
-            <p className="rounded-lg border border-orange-400/30 bg-orange-500/10 px-3 py-2 text-xs text-orange-200">
-              La carte passe à « Bail à envoyer » : prépare et envoie
-              le bail via la CORPIQ, glisse la carte à « Bail
-              envoyé », puis importe le bail signé pour passer à
-              « Reloué ».
+            <p className="rounded-lg border border-fuchsia-400/30 bg-fuchsia-500/10 px-3 py-2 text-xs text-fuchsia-200">
+              La carte passe à « Bail en signature ». Dès que le bail
+              signé est en main (PDF du gestionnaire, ou bientôt notre
+              système de signature), joins-le : c&apos;est ce qui fait
+              passer la carte à « Reloué ».
             </p>
             <div className="flex flex-col gap-1.5 text-xs">
               <Link
@@ -1757,34 +1312,32 @@ function ConvertModal({
                 Fiche du locataire
               </Link>
             </div>
-            <div className="flex justify-end border-t border-brand-800 pt-3">
+            <div className="flex flex-wrap justify-end gap-2 border-t border-brand-800 pt-3">
               <button
                 type="button"
                 onClick={onDone}
+                className="btn-secondary btn-sm"
+              >
+                Plus tard
+              </button>
+              <button
+                type="button"
+                onClick={() => onImporterBail(done.bail_id)}
                 className="btn-accent btn-sm"
               >
-                Fermer
+                <FileSignature className="h-4 w-4" /> Joindre le bail
+                signé maintenant
               </button>
             </div>
           </div>
         ) : (
           <div className="grid gap-3 p-5">
             <p className="rounded-lg border border-sky-400/30 bg-sky-500/10 px-3 py-2 text-xs text-sky-200">
-              Tout est prérempli depuis le dossier — vérifie et ajuste avant
-              de confirmer. Rien n&apos;est créé sans ton accord.
+              Choisis un locataire déjà client ou crée sa fiche sur
+              place. Son bail est créé en « proposé » — rien n&apos;est
+              envoyé au locataire, rien n&apos;est créé sans ton accord.
             </p>
             <div className="flex gap-1.5">
-              <button
-                type="button"
-                onClick={() => setModeExistant(false)}
-                className={`rounded-md border px-2.5 py-1 text-xs font-semibold ${
-                  !modeExistant
-                    ? "border-emerald-400/40 bg-emerald-500/15 text-emerald-200"
-                    : "border-brand-700 text-white/50 hover:bg-brand-900"
-                }`}
-              >
-                Nouveau locataire
-              </button>
               <button
                 type="button"
                 onClick={() => setModeExistant(true)}
@@ -1795,6 +1348,17 @@ function ConvertModal({
                 }`}
               >
                 Locataire existant (déjà client)
+              </button>
+              <button
+                type="button"
+                onClick={() => setModeExistant(false)}
+                className={`rounded-md border px-2.5 py-1 text-xs font-semibold ${
+                  !modeExistant
+                    ? "border-emerald-400/40 bg-emerald-500/15 text-emerald-200"
+                    : "border-brand-700 text-white/50 hover:bg-brand-900"
+                }`}
+              >
+                Nouveau locataire
               </button>
             </div>
             {modeExistant ? (
@@ -1917,7 +1481,7 @@ function ConvertModal({
               <input
                 value={ancienneAdresse}
                 onChange={(e) => setAncienneAdresse(e.target.value)}
-                placeholder="Adresse actuelle du candidat (avant le déménagement)"
+                placeholder="Adresse actuelle du locataire (avant le déménagement)"
                 className={`${INPUT_CLS} mt-0.5 block w-full`}
               />
             </label>
@@ -2025,7 +1589,7 @@ function ConvertModal({
                 ) : (
                   <FileSignature className="h-4 w-4" />
                 )}
-                Confirmer la création
+                Lier et créer le bail
               </button>
             </div>
           </div>
@@ -2035,182 +1599,7 @@ function ConvertModal({
   );
 }
 
-// ─── Candidat = locataire existant (déjà client) ────────────────────────
-
-function PickLocataireExistant({
-  onPick
-}: {
-  onPick: (lo: { id: number; full_name: string }) => Promise<void> | void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [dispo, setDispo] = useState<
-    { id: number; full_name: string }[] | null
-  >(null);
-  const [q, setQ] = useState("");
-
-  useEffect(() => {
-    if (!open || dispo !== null) return;
-    void (async () => {
-      try {
-        const r = await authedFetch("/api/v1/immobilier/locataires");
-        setDispo(
-          r.ok
-            ? ((await r.json()) as { id: number; full_name: string }[])
-            : []
-        );
-      } catch {
-        setDispo([]);
-      }
-    })();
-  }, [open, dispo]);
-
-  if (!open)
-    return (
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        className="mt-2 text-xs font-semibold text-accent-500 underline-offset-2 hover:underline"
-      >
-        + Candidat = locataire existant (déjà client)
-      </button>
-    );
-  return (
-    <div className="mt-2 grid gap-1.5 rounded-lg border border-brand-800 bg-brand-950/60 p-2">
-      <div className="flex items-center gap-2">
-        <input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="Rechercher un locataire déjà client…"
-          className={`${INPUT_CLS} flex-1`}
-        />
-        <button
-          type="button"
-          onClick={() => setOpen(false)}
-          className="btn-ghost btn-xs"
-        >
-          <X className="h-3.5 w-3.5" />
-        </button>
-      </div>
-      <div className="max-h-32 overflow-y-auto rounded-md border border-brand-800">
-        {(dispo || [])
-          .filter((l) =>
-            l.full_name.toLowerCase().includes(q.toLowerCase())
-          )
-          .slice(0, 20)
-          .map((l) => (
-            <button
-              key={l.id}
-              type="button"
-              onClick={() => {
-                void onPick(l);
-                setOpen(false);
-              }}
-              className="block w-full px-3 py-1.5 text-left text-xs text-white/75 hover:bg-brand-900"
-            >
-              {l.full_name}
-            </button>
-          ))}
-        {dispo === null ? (
-          <p className="px-3 py-1.5 text-xs text-white/40">Chargement…</p>
-        ) : null}
-      </div>
-      <p className="text-[10px] text-white/40">
-        À la conversion, le bail s&apos;attachera à sa fiche existante —
-        aucun doublon.
-      </p>
-    </div>
-  );
-}
-
-// ─── Bail : choix d'unité, import du bail signé, désistement ────────────
-
-function PickDossierPourBailModal({
-  rows,
-  onClose,
-  onPick
-}: {
-  rows: Dossier[];
-  onClose: () => void;
-  onPick: (id: number) => void;
-}) {
-  // Unités éligibles : dossiers actifs SANS bail créé, immeubles gérés
-  // par nous (pas de bail Kratos pour la gestion externe).
-  // Retour Phil 2026-08-19 : « ça me permet de sélectionner les
-  // logements qui sont juste dans des départs confirmés ». Exact — et
-  // ça menait à une fiche où il n'y avait rien à convertir. Ce raccourci
-  // n'a de sens que pour un dossier qui a DÉJÀ un candidat retenu :
-  // c'est lui qu'on transforme en locataire.
-  const eligibles = rows.filter(
-    (d) =>
-      d.nouveau_bail_id == null &&
-      !d.gestion_externe &&
-      d.statut !== "bail_envoye" &&
-      d.statut !== "reloue" &&
-      d.statut !== "annule" &&
-      d.visites.some((v) => v.retenu)
-  );
-  return (
-    <div
-      className="fixed inset-0 z-[60] flex items-start justify-center overflow-y-auto bg-black/70 p-4 backdrop-blur-sm"
-      onClick={onClose}
-    >
-      <div
-        className="my-8 w-full max-w-md rounded-2xl border border-brand-800 bg-brand-950 shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between border-b border-brand-800 px-5 py-3">
-          <h2 className="text-sm font-bold uppercase tracking-wider text-accent-500">
-            Convertir un candidat retenu
-          </h2>
-          <button type="button" onClick={onClose} className="btn-ghost btn-xs">
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-        <div className="p-5">
-          <p className="mb-3 text-xs text-white/55">
-            Ce bouton ne crée pas de bail : il ouvre la fiche d&apos;un
-            dossier dont le candidat est <b>retenu</b>, pour le
-            transformer en locataire. Le bail se prépare ensuite dans la
-            CORPIQ, puis s&apos;importe en glissant la carte jusqu&apos;à
-            « Reloué ».
-          </p>
-          {eligibles.length === 0 ? (
-            <p className="rounded-lg border border-brand-800 bg-brand-900 px-3 py-2 text-xs text-white/50">
-              Aucun candidat retenu en attente de conversion. Retiens
-              d&apos;abord un candidat sur une fiche (bouton « Retenu »
-              dans Visites &amp; candidats).
-            </p>
-          ) : (
-            <ul className="divide-y divide-brand-800/60 overflow-hidden rounded-xl border border-brand-800">
-              {eligibles.map((d) => (
-                <li key={d.id}>
-                  <button
-                    type="button"
-                    onClick={() => onPick(d.id)}
-                    className="flex w-full items-center justify-between gap-3 bg-brand-900/60 px-3 py-2.5 text-left text-sm text-white transition hover:bg-brand-900"
-                  >
-                    <span className="min-w-0">
-                      <span className="block truncate font-semibold">
-                        {d.immeuble_name} · Log. {d.logement_numero}
-                      </span>
-                      <span className="text-xs text-white/50">
-                        {STATUT_LABEL[d.statut] || d.statut}
-                        {d.loyer_demande != null
-                          ? ` · ${money(d.loyer_demande)}/mois demandé`
-                          : ""}
-                      </span>
-                    </span>
-                    <ChevronRight className="h-4 w-4 flex-shrink-0 text-white/40" />
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
+// ─── Bail : import du bail signé, retrait du locataire ──────────────────
 
 function ImportBailSigneModal({
   d,
@@ -2291,7 +1680,7 @@ function ImportBailSigneModal({
         </div>
         <div className="grid gap-3 p-5">
           <p className="rounded-lg border border-sky-400/30 bg-sky-500/10 px-3 py-2 text-xs text-sky-200">
-            Le bail signé (CORPIQ) est obligatoire pour passer à
+            Le bail signé (PDF) est obligatoire pour passer à
             « Reloué » : il devient le bail au dossier — visible dans
             les Documents et les boutons Bail — et l&apos;appartement
             est considéré loué par ce locataire.
@@ -2415,7 +1804,7 @@ function DesistementButton({
   async function desister() {
     if (
       !window.confirm(
-        "⚠️ Désistement du candidat ?\n\nCeci va SUPPRIMER LA FICHE DU LOCATAIRE créé et son bail. Le dossier reviendra à « Départ confirmé » et le logement reprendra son vrai statut."
+        "⚠️ Retirer le locataire lié ?\n\nSon bail proposé est SUPPRIMÉ (et sa fiche aussi, si elle a été créée ici et n'a aucun autre bail). Le dossier revient à « À louer » et le logement reprend son vrai statut."
       )
     )
       return;
@@ -2444,11 +1833,11 @@ function DesistementButton({
         type="button"
         disabled={busy}
         onClick={() => void desister()}
-        title="Le candidat se désiste : supprime le locataire créé et son bail, retour à « Départ confirmé »"
+        title="Le locataire se désiste ou tu t'es trompé de fiche : supprime le bail proposé (et la fiche créée ici), retour à « À louer »"
         className="rounded-md border border-rose-500/40 bg-rose-500/10 px-2 py-1 text-[11px] font-semibold text-rose-300 transition hover:bg-rose-500/20 disabled:opacity-50"
       >
         {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
-        Désistement
+        Retirer le locataire
       </button>
       {err ? (
         <span className="text-[10px] text-rose-300" title={err}>

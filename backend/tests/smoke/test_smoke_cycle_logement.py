@@ -226,11 +226,11 @@ def test_locataire_parti_disparait_des_loyers(
         )
 
 
-def test_annuler_depart_refuse_si_candidat_retenu(client, auth_headers, run):
+def test_annuler_depart_refuse_si_locataire_lie(client, auth_headers, run):
     """Le geste inverse de « mettre fin au bail ». Il doit être REFUSÉ
-    dès qu'un candidat est retenu : annuler mettrait deux locataires sur
-    la même unité. Le refus dit quoi faire plutôt que de se contenter de
-    bloquer.
+    dès qu'un locataire est lié (bail en signature) : annuler mettrait
+    deux locataires sur la même unité. Le refus dit quoi faire plutôt
+    que de se contenter de bloquer.
     """
     async def _seed(statut: str) -> dict:
         async with TestSessionLocal() as s:
@@ -265,14 +265,14 @@ def test_annuler_depart_refuse_si_candidat_retenu(client, auth_headers, run):
             await s.commit()
             return {"bail_id": b.id, "logement_id": lg.id}
 
-    # (a) Candidat retenu → refus explicite.
-    engage = run(_seed(LocationDossierStatut.CANDIDAT_RETENU.value))
+    # (a) Locataire lié (bail en signature) → refus explicite.
+    engage = run(_seed(LocationDossierStatut.BAIL_ENVOYE.value))
     r = client.post(
         f"/api/v1/immobilier/baux/{engage['bail_id']}/annuler-depart",
         headers=auth_headers,
     )
     assert r.status_code == 409, r.text
-    assert "candidat" in r.text.lower()
+    assert "locataire" in r.text.lower()
 
     # (b) Départ simplement annoncé → l'annulation passe, le bail
     # redevient actif et le logement occupé.

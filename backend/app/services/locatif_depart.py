@@ -60,6 +60,51 @@ DOSSIER_STATUTS_REGLES = (
     LocationDossierStatut.RELOUE.value,
 )
 
+#: Location SIMPLIFIÉE (retour Phil 2026-09-09) : les anciennes étapes
+#: « visites », « candidat retenu » et « bail à envoyer » n'existent
+#: plus. Les lignes existantes sont ramenées sur les quatre étapes au
+#: recalage quotidien et au démarrage ; un client qui envoie encore ces
+#: valeurs est traduit à la volée.
+LOCATION_STATUTS_LEGACY = {
+    "visites": LocationDossierStatut.ANNONCE_PUBLIEE.value,
+    "candidat_retenu": LocationDossierStatut.ANNONCE_PUBLIEE.value,
+    "bail_a_envoyer": LocationDossierStatut.BAIL_ENVOYE.value,
+}
+
+
+def normaliser_statut_location(
+    statut: Optional[str], nouveau_bail_id: Optional[int] = None
+) -> Optional[str]:
+    """Traduit un ancien statut de relocation. Dès qu'un bail est lié au
+    dossier, l'étape est « bail en signature » ; sinon la correspondance
+    simple (visites / candidat retenu → affiché)."""
+    if statut in LOCATION_STATUTS_LEGACY:
+        if nouveau_bail_id is not None:
+            return LocationDossierStatut.BAIL_ENVOYE.value
+        return LOCATION_STATUTS_LEGACY[statut]
+    return statut
+
+
+async def migrer_statuts_legacy(db: AsyncSession) -> int:
+    """Ramène les dossiers encore sur une ancienne étape vers les quatre
+    étapes de la Location simplifiée. Idempotent, ne committe pas."""
+    dossiers = (
+        await db.execute(
+            select(LocationDossier).where(
+                LocationDossier.statut.in_(list(LOCATION_STATUTS_LEGACY))
+            )
+        )
+    ).scalars().all()
+    for d in dossiers:
+        d.statut = normaliser_statut_location(d.statut, d.nouveau_bail_id)
+        d.updated_at = _now()
+    if dossiers:
+        log.info(
+            "Location simplifiée : %s dossier(s) ramené(s) sur les "
+            "nouvelles étapes", len(dossiers),
+        )
+    return len(dossiers)
+
 NOTE_RECONDUCTION_AUTO = (
     "Reconduction tacite automatique (aucune réponse à l'échéance)"
 )
