@@ -14,6 +14,7 @@ import {
 
 import { Link, useRouter } from "@/i18n/navigation";
 import { authedFetch } from "@/lib/auth";
+import { BoutonExport } from "@/components/immobilier/bouton-export";
 import { ImmobilierTopbar, useImmobilierLayout } from "../layout";
 
 type Locataire = {
@@ -189,14 +190,28 @@ export default function LocatairesPage() {
           { label: "Locataires" }
         ]}
         rightSlot={
-          <button
-            type="button"
-            onClick={() => setShowCreate(true)}
-            className="btn-outline-accent btn-sm"
-          >
-            <Plus className="h-3.5 w-3.5" />
-            Nouveau locataire
-          </button>
+          <>
+            <BoutonExport
+              cibles={[
+                {
+                  base: "/api/v1/immobilier/exports/locataires",
+                  sujet: "locataires",
+                  params: {
+                    immeuble_id:
+                      immeubleFilter !== "all" ? immeubleFilter : undefined
+                  }
+                }
+              ]}
+            />
+            <button
+              type="button"
+              onClick={() => setShowCreate(true)}
+              className="btn-outline-accent btn-sm"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              Nouveau locataire
+            </button>
+          </>
         }
       />
 

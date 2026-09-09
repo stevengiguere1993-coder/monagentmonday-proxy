@@ -12,6 +12,7 @@ import {
 
 import { Link, useRouter } from "@/i18n/navigation";
 import { authedFetch, getToken } from "@/lib/auth";
+import { BoutonExport } from "@/components/immobilier/bouton-export";
 import {
   EntrepriseSelector,
   ImmobilierTopbar,
@@ -109,6 +110,15 @@ export default function ImmeublesListPage() {
         ]}
         rightSlot={
           <>
+            <BoutonExport
+              cibles={[
+                {
+                  base: "/api/v1/immobilier/exports/immeubles",
+                  sujet: "immeubles",
+                  params: { entreprise_id: currentEntrepriseId ?? undefined }
+                }
+              ]}
+            />
             <button
               type="button"
               onClick={() => setShowCreate(true)}

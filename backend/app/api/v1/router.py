@@ -61,6 +61,7 @@ from app.api.v1.endpoints import (
     immobilier,
     immobilier_communications,
     immobilier_documents,
+    immobilier_exports,
     immobilier_extras,
     immobilier_import_excel,
     immobilier_locations,
@@ -521,6 +522,11 @@ api_router.include_router(
 )
 api_router.include_router(
     immobilier_frais_gestion.router, dependencies=DEP_IMMOBILIER
+)
+# Exports CSV/Excel + zip de documents (/immobilier/exports/*,
+# /immobilier/<sujet>/{id}/documents.zip) — avant immobilier.router.
+api_router.include_router(
+    immobilier_exports.router, dependencies=DEP_IMMOBILIER
 )
 # Validation bancaire des loyers (QuickBooks lecture seule) — avant
 # immobilier.router (préfixe /immobilier/validation-bancaire).

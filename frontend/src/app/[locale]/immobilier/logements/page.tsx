@@ -13,6 +13,7 @@ import {
 
 import { Link, useRouter } from "@/i18n/navigation";
 import { authedFetch } from "@/lib/auth";
+import { BoutonExport } from "@/components/immobilier/bouton-export";
 import { ImmobilierTopbar, useImmobilierLayout } from "../layout";
 import { LOUER_INDEFINIMENT_INFO } from "@/components/immobilier/fin-bail";
 import {
@@ -207,18 +208,32 @@ export default function LogementsPage() {
               </p>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={() => {
-              setAddImmId(
-                immeubleFilter !== "all" ? String(immeubleFilter) : ""
-              );
-              setChooserOpen(true);
-            }}
-            className="btn-outline-accent btn-sm"
-          >
-            <Plus className="h-3.5 w-3.5" /> Ajouter un logement
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <BoutonExport
+              cibles={[
+                {
+                  base: "/api/v1/immobilier/exports/logements",
+                  sujet: "logements",
+                  params: {
+                    immeuble_id:
+                      immeubleFilter !== "all" ? immeubleFilter : undefined
+                  }
+                }
+              ]}
+            />
+            <button
+              type="button"
+              onClick={() => {
+                setAddImmId(
+                  immeubleFilter !== "all" ? String(immeubleFilter) : ""
+                );
+                setChooserOpen(true);
+              }}
+              className="btn-outline-accent btn-sm"
+            >
+              <Plus className="h-3.5 w-3.5" /> Ajouter un logement
+            </button>
+          </div>
         </header>
 
         {/* Filtres */}
