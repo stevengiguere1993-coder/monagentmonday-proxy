@@ -90,13 +90,17 @@ def test_balance_vente_reduit_la_mdf():
     ) < 0.01
 
 
-def test_balance_vente_plafonnee_a_la_mdf():
-    """La BV remplace du CASH : jamais plus que X % × prix."""
+def test_balance_vente_sans_plafond():
+    """Retour Phil 2026-09-08 : la BV saisie est la BV retenue, même
+    au-delà de la mise de fonds (l'excédent couvre les frais) ; le cash
+    peut passer sous zéro, comme avec le cashback."""
+    sans = compute_all(_inputs(), use_aph_select=False)
     r = compute_all(
         _inputs(balance_vente_montant=2_000_000.0),
         use_aph_select=False,
     )
-    assert r.balance_vente_retenue == 250_000.0  # 25 % × 1 M$
+    assert r.balance_vente_retenue == 2_000_000.0
+    assert abs((sans.mdf_preteur_b - r.mdf_preteur_b) - 2_000_000) < 0.01
 
 
 def test_croissance_organique_mode_preteur_b():
@@ -265,8 +269,8 @@ def test_traditionnel_balance_vente_et_depenses():
         use_aph_select=False,
     )
     t = r.to_dict()["traditionnel"]
-    # BV plafonnée à la mise de fonds restante (prix − prêt retenu).
-    bv = min(100_000.0, max(0.0, 1_000_000 - t["pret_retenu"]))
+    # BV = montant saisi, sans plafond (retour Phil 2026-09-08).
+    bv = 100_000.0
     assert abs(t["balance_vente"] - bv) < 0.01
     assert abs(t["interets_bv_annuels"] - bv * 0.06) < 0.01
     dep = t["achat"]["conventionnel"]["depenses"]

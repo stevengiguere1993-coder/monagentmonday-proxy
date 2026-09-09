@@ -154,6 +154,8 @@ type LeadDetail = {
   /** Phase 3 — unités [{typo, loyer_actuel, loyer_cible, optimiser}]. */
   unites_json?: string | null;
   analysis_results_json: string | null;
+  /** Renseigné par le PATCH si le recalcul auto a échoué. */
+  recalc_error?: string | null;
   validation_warnings: ValidationWarning[] | null;
   attachments: Array<{
     id: number;
@@ -504,6 +506,9 @@ export function LeadAnalysisDetailModal({
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<TabKey>("infos");
   const save = useSaveFeedback();
+  // Échec du recalcul automatique (retour Phil 2026-09-08) : affiché
+  // en clair au lieu de laisser des résultats périmés sans le dire.
+  const [recalcError, setRecalcError] = useState<string | null>(null);
 
   // Stratégie « institution traditionnelle » (alias inclus) → onglet
   // « Achat » visible ; s'il est actif quand la stratégie change, on
@@ -563,6 +568,11 @@ export function LeadAnalysisDetailModal({
       try {
         const updated = (await r.json()) as Record<string, unknown>;
         if (updated && typeof updated === "object") {
+          setRecalcError(
+            typeof updated.recalc_error === "string" && updated.recalc_error
+              ? updated.recalc_error
+              : null
+          );
           setData((prev) => {
             if (!prev) return prev;
             const merged = { ...prev } as Record<string, unknown>;
@@ -946,6 +956,13 @@ export function LeadAnalysisDetailModal({
                 />
               </div>
 
+              {recalcError ? (
+                <div className="mt-3 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+                  ⚠ Le recalcul automatique a échoué — les chiffres affichés
+                  sont périmés. Clique « Lancer l&apos;analyse » et, si ça
+                  persiste, transmets ce message : {recalcError}
+                </div>
+              ) : null}
               {/* Bande de hero metrics */}
               {hero ? (
                 <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
@@ -5969,6 +5986,12 @@ function FraisDemarrageBreakdownPanel({
                         <span className="text-[9px] text-emerald-300/70">
                           BV
                         </span>
+                      </span>
+                    ) : null}
+                    {bvDeduiteMdf + cashback > mdfPctValue + 0.5 ? (
+                      <span className="text-[9px] text-amber-300/80">
+                        dépasse la mise de fonds — l&apos;excédent couvre les
+                        frais
                       </span>
                     ) : null}
                   </span>

@@ -92,7 +92,6 @@ def test_parcours_traditionnel_cashback_et_tri(client, auth_headers, run):
     assert t is not None
     assert t["cashback"] == 20_000.0
     assert t["prix_reel"] == 980_000.0
-    # BV 20 k ≤ mise de fonds restante (prix − prêt − cashback) → retenue.
     assert t["balance_vente"] == 20_000.0
     assert t["prix_achat"] == 1_000_000.0
     f = t["frais_demarrage"]
@@ -199,8 +198,8 @@ def test_parcours_traditionnel_cashback_et_tri(client, auth_headers, run):
     assert inp_b["annee_refi"] == 3
     assert inp_b["amortissement_initial"] is False  # prêteur B : intérêts seulement
     assert inp_b["amort_refi"] > 0
-    # En prêteur B la BV est plafonnée à l'assise restante après cashback
-    # (250 k − 20 k ≥ 20 k → 20 k) : dette initiale = prêt B + BV.
+    # En prêteur B la BV saisie est retenue telle quelle : dette initiale
+    # = prêt B + BV.
     bv_b = res_b2["balance_vente"]["montant"]
     assert bv_b == 20_000.0
     assert abs(inp_b["rpv_achat"] - 0.77) < 1e-9
