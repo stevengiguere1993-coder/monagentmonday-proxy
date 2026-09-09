@@ -49,6 +49,7 @@ import {
 } from "@/components/immobilier/logement-fiche";
 import { LocationsBoard } from "@/components/immobilier/locations-board";
 import { BailDocActions } from "@/components/immobilier/tal-avis";
+import { BoutonExport } from "@/components/immobilier/bouton-export";
 import {
   BadgeGestionExterne,
   CelluleLoyer,
@@ -846,6 +847,50 @@ export default function ImmeubleDetailPage({
                 <Loader2 className="h-3.5 w-3.5 animate-spin text-accent-500" />
               ) : null}
             </label>
+            {/* Exports de CET immeuble (immeuble_id préfixé) : tableaux
+                CSV/Excel + zip de tous ses documents. */}
+            <BoutonExport
+              cibles={[
+                {
+                  label: "Paiements (mois courant)",
+                  base: "/api/v1/immobilier/exports/paiements",
+                  sujet: "paiements",
+                  params: {
+                    mois: new Date().toISOString().slice(0, 7),
+                    immeuble_id: immeubleId
+                  }
+                },
+                {
+                  label: "Locataires",
+                  base: "/api/v1/immobilier/exports/locataires",
+                  sujet: "locataires",
+                  params: { immeuble_id: immeubleId }
+                },
+                {
+                  label: "Baux",
+                  base: "/api/v1/immobilier/exports/baux",
+                  sujet: "baux",
+                  params: { immeuble_id: immeubleId }
+                },
+                {
+                  label: "Logements",
+                  base: "/api/v1/immobilier/exports/logements",
+                  sujet: "logements",
+                  params: { immeuble_id: immeubleId }
+                },
+                {
+                  label: "Dépôts de garantie",
+                  base: "/api/v1/immobilier/exports/depots",
+                  sujet: "depots",
+                  params: { immeuble_id: immeubleId }
+                }
+              ]}
+              zip={{
+                path: `/api/v1/immobilier/immeubles/${immeubleId}/documents.zip?categorie=tout`,
+                sujet: `immeuble_${immeubleId}`
+              }}
+              variant="outline"
+            />
             <ActionsMenu
               onEdit={openEdit}
               onDelete={() => setShowDelete(true)}

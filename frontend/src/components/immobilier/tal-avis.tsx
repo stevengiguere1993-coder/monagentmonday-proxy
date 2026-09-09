@@ -28,6 +28,7 @@ import {
 
 import { Link } from "@/i18n/navigation";
 import { authedFetch } from "@/lib/auth";
+import { BoutonExportZip } from "@/components/immobilier/bouton-export";
 import { FinBailModal } from "@/components/immobilier/fin-bail";
 
 export type BailDocument = {
@@ -1360,6 +1361,23 @@ export function DocumentsSection({
             busy={importing}
             onPick={(f) => void doImport(f)}
           />
+          {/* Zip de ce qui est listé ici (pièces du DOSSIER : signées ou
+              importées) + index.csv. */}
+          {docs && docs.length > 0 ? (
+            <BoutonExportZip
+              path={
+                locataireId != null
+                  ? `/api/v1/immobilier/locataires/${locataireId}/documents.zip?categorie=dossier`
+                  : `/api/v1/immobilier/logements/${logementId}/documents.zip?categorie=dossier`
+              }
+              sujet={
+                locataireId != null
+                  ? `locataire_${locataireId}`
+                  : `logement_${logementId}`
+              }
+              onError={(msg) => setErr(`Export : ${msg}`)}
+            />
+          ) : null}
           {bails.map((b) => (
             <span key={b.id} className="inline-flex items-center gap-1.5">
               {bails.length > 1 ? (

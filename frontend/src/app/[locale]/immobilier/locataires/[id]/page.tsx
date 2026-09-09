@@ -37,6 +37,7 @@ import {
   DocumentsSection
 } from "@/components/immobilier/tal-avis";
 import { AssignerBailButton } from "@/components/immobilier/assigner-bail";
+import { BoutonExportZip } from "@/components/immobilier/bouton-export";
 import {
   echeanceLabel,
   JOUR_ECHEANCE_DEFAUT,
@@ -758,6 +759,16 @@ export default function LocataireDetailPage({
                   )}
                   État de compte
                 </button>
+                {/* Tout le dossier (documents signés/importés ET
+                    communications générées) dans un zip + index.csv. */}
+                <BoutonExportZip
+                  path={`/api/v1/immobilier/locataires/${locataireId}/documents.zip?categorie=tout`}
+                  sujet={`locataire_${locataireId}`}
+                  size="sm"
+                  variant="outline"
+                  title="Télécharger tous les documents de ce locataire (PDF) dans un zip, avec un index.csv"
+                  onError={(msg) => setError(`Export : ${msg}`)}
+                />
                 <button
                   type="button"
                   onClick={() => void supprimerLocataire()}

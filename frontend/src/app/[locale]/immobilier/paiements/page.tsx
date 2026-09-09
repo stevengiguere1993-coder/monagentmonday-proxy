@@ -25,6 +25,7 @@ import { BandeauAvisRenouvellement } from "@/components/immobilier/bandeau-avis"
 import { BandeauBailManquant } from "@/components/immobilier/bandeau-bail-manquant";
 import { BandeauDepotARembourser } from "@/components/immobilier/bandeau-depot";
 import { echeanceLabel } from "@/components/immobilier/fin-bail";
+import { BoutonExport } from "@/components/immobilier/bouton-export";
 import {
   BadgeGestionExterne,
   CelluleLoyer,
@@ -796,6 +797,35 @@ Le mois redeviendra impayé — cette action ne se défait pas.`
                 <ChevronRight className="h-4 w-4" />
               </button>
             </div>
+            {/* Export CSV/Excel : le mois affiché (mêmes lignes, mêmes
+                états que le tableau, filtre immeuble compris) ou une
+                période du/au. */}
+            <BoutonExport
+              cibles={[
+                {
+                  label: `Mois affiché (${monthLabel(mois)})`,
+                  base: "/api/v1/immobilier/exports/paiements",
+                  sujet: `paiements_${mois}`,
+                  params: {
+                    mois,
+                    immeuble_id:
+                      immeubleFilter !== "all" ? immeubleFilter : undefined,
+                    entreprise_id: currentEntrepriseId ?? undefined
+                  }
+                }
+              ]}
+              periode={{
+                base: "/api/v1/immobilier/exports/paiements",
+                sujet: "paiements_periode",
+                du: shiftMonth(mois, -11),
+                au: mois,
+                params: {
+                  immeuble_id:
+                    immeubleFilter !== "all" ? immeubleFilter : undefined,
+                  entreprise_id: currentEntrepriseId ?? undefined
+                }
+              }}
+            />
           </div>
         </header>
 

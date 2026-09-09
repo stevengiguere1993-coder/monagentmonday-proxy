@@ -35,6 +35,7 @@ import { BandeauAvisRenouvellement } from "@/components/immobilier/bandeau-avis"
 import { BandeauBailManquant } from "@/components/immobilier/bandeau-bail-manquant";
 import { BandeauDepotARembourser } from "@/components/immobilier/bandeau-depot";
 import { BailDocActions } from "@/components/immobilier/tal-avis";
+import { BoutonExport } from "@/components/immobilier/bouton-export";
 import {
   CreerBailModal,
   AnnulerDepartModal,
@@ -233,6 +234,20 @@ export default function BauxPage() {
               affiché{filtres.length > 1 ? "s" : ""}
             </span>
           ) : null}
+          {/* Export CSV/Excel — même filtre immeuble que le tableau. */}
+          <span className="ml-auto">
+            <BoutonExport
+              cibles={[
+                {
+                  base: "/api/v1/immobilier/exports/baux",
+                  sujet: "baux",
+                  params: {
+                    immeuble_id: fImmeuble || immeubleId || undefined
+                  }
+                }
+              ]}
+            />
+          </span>
         </div>
 
         {flash ? (
