@@ -138,6 +138,8 @@ class LogementBase(BaseModel):
     type: str = Field(default="residentiel", max_length=32)
     status: str = Field(default="vacant", max_length=16)
     loyer_demande: Optional[float] = Field(default=None, ge=0)
+    #: Gestion externe : nom du locataire (facultatif, sans fiche).
+    locataire_externe_nom: Optional[str] = Field(default=None, max_length=255)
     notes: Optional[str] = None
 
 
@@ -156,6 +158,7 @@ class LogementUpdate(BaseModel):
     type: Optional[str] = Field(default=None, max_length=32)
     status: Optional[str] = Field(default=None, max_length=16)
     loyer_demande: Optional[float] = Field(default=None, ge=0)
+    locataire_externe_nom: Optional[str] = Field(default=None, max_length=255)
     notes: Optional[str] = None
 
 
@@ -254,6 +257,11 @@ class BailBase(BaseModel):
     date_fin: date
     loyer_mensuel: float = Field(..., ge=0)
     depot_garantie: Optional[float] = Field(default=None, ge=0)
+    #: Date de RÉCEPTION du dépôt et détenteur — saisissables dès la
+    #: création (retour Phil 2026-09-09 : « date inconnue » partout
+    #: parce qu'aucun formulaire ne les écrivait).
+    depot_recu_le: Optional[date] = None
+    depot_detenteur: Optional[str] = Field(default=None, max_length=120)
     chauffage_inclus: bool = False
     eau_chaude_inclus: bool = False
     electricite_inclus: bool = False

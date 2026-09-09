@@ -305,6 +305,8 @@ async def ensure_critical_columns() -> None:
         # le volet immobilier. Table préexistante → create_all ne les
         # pose pas ; on les garantit ici (transaction par colonne).
         ("imm_immeubles", "gestion_externe", "BOOLEAN NOT NULL DEFAULT FALSE"),
+        # Gestion externe : nom du locataire sur le logement (2026-09-09).
+        ("imm_logements", "locataire_externe_nom", "VARCHAR(255)"),
         ("imm_immeubles", "gestionnaire_externe_nom", "VARCHAR(255)"),
         ("imm_immeubles", "gestionnaire_externe_contact", "VARCHAR(255)"),
         # Gestion externe mais maintenance par NOS hommes (2026-07-22).

@@ -180,6 +180,93 @@ function StatutBadge({ status }: { status: string }) {
   return <span className={`badge ${t.cls}`}>{t.label}</span>;
 }
 
+/** Gestion EXTERNE (retour Phil 2026-09-09) : pas de bail ni de
+ *  relocation dans Kratos — juste un NOM de locataire facultatif sur
+ *  l'unité (repère pour le rapport mensuel du gestionnaire) et un
+ *  « Départ » qui rend l'unité vacante et efface le nom. */
+function LocataireExterneActions({
+  logementId,
+  nom,
+  nomBail,
+  statut,
+  onDone
+}: {
+  logementId: number;
+  nom: string | null;
+  /** Nom porté par un bail résiduel (créé avant la règle), en filet. */
+  nomBail: string | null;
+  statut: string;
+  onDone: () => void;
+}) {
+  const [valeur, setValeur] = useState(nom ?? nomBail ?? "");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  useEffect(() => {
+    setValeur(nom ?? nomBail ?? "");
+  }, [nom, nomBail]);
+
+  async function patch(body: Record<string, unknown>) {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const r = await authedFetch(`/api/v1/immobilier/logements/${logementId}`, {
+        method: "PATCH",
+        body: JSON.stringify(body)
+      });
+      if (!r.ok) throw new Error((await r.text()).slice(0, 200));
+      onDone();
+    } catch (e) {
+      setMsg((e as Error).message || "Échec.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="badge badge-sky" title="Perception déléguée à la compagnie de gestion">
+        Gestion externe
+      </span>
+      <input
+        type="text"
+        value={valeur}
+        onChange={(e) => setValeur(e.target.value)}
+        placeholder="Nom du locataire (facultatif)"
+        className="input w-56 py-1 text-xs"
+      />
+      <button
+        type="button"
+        disabled={busy || (valeur.trim() || "") === (nom ?? "")}
+        onClick={() =>
+          void patch({
+            locataire_externe_nom: valeur.trim() || null,
+            ...(valeur.trim() && statut === "vacant" ? { status: "occupe" } : {})
+          })
+        }
+        className="inline-flex items-center gap-1.5 rounded-lg border border-accent-500/40 bg-accent-500/10 px-2.5 py-1 text-xs font-semibold text-accent-500 transition hover:bg-accent-500/20 disabled:opacity-50"
+      >
+        Enregistrer le nom
+      </button>
+      {statut !== "vacant" ? (
+        <button
+          type="button"
+          disabled={busy}
+          title="Le locataire part : l'unité devient vacante et le nom s'efface (rien d'autre en gestion externe)"
+          onClick={() => {
+            if (window.confirm("Marquer ce logement vacant et effacer le nom du locataire ?"))
+              void patch({ status: "vacant" });
+          }}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-xs font-semibold text-amber-300 transition hover:bg-amber-500/20 disabled:opacity-50"
+        >
+          {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+          Départ
+        </button>
+      ) : null}
+      {msg ? <span className="text-xs text-rose-300">{msg}</span> : null}
+    </div>
+  );
+}
+
 export default function LogementDetailPage({
   params
 }: {
@@ -836,6 +923,17 @@ export default function LogementDetailPage({
                   <h2 className="text-sm font-semibold uppercase tracking-wider text-accent-500">
                     Locataire actuel &amp; bail actif
                   </h2>
+                  {externe ? (
+                    <LocataireExterneActions
+                      logementId={logementId}
+                      nom={lg.locataire_externe_nom ?? null}
+                      nomBail={
+                        bailActif?.locataire?.full_name ?? null
+                      }
+                      statut={lg.status}
+                      onDone={() => void loadDossier()}
+                    />
+                  ) : (
                   <div className="flex items-center gap-2">
                     {!bailActif ? (
                       <AssignerBailButton
@@ -866,6 +964,7 @@ export default function LogementDetailPage({
                       {bailActif ? "Départ" : "Relouer"}
                     </button>
                   </div>
+                  )}
                 </div>
                 {relocMsg ? (
                   <p className="mb-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">

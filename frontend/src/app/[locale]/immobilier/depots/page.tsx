@@ -58,6 +58,54 @@ function money(n: number | null | undefined): string {
   });
 }
 
+/** Date de réception + détenteur du dépôt, MODIFIABLES sur place
+ *  (retour Phil 2026-09-09 : « date inconnue » partout parce qu'aucun
+ *  formulaire ne les écrivait). */
+function DepotInfosCell({
+  row,
+  onSave
+}: {
+  row: { depot_recu_le?: string | null; depot_detenteur?: string | null; date_debut?: string | null };
+  onSave: (patch: { depot_recu_le?: string | null; depot_detenteur?: string | null }) => Promise<boolean>;
+}) {
+  const [date, setDate] = useState(row.depot_recu_le ?? "");
+  const [det, setDet] = useState(row.depot_detenteur ?? "");
+  useEffect(() => {
+    setDate(row.depot_recu_le ?? "");
+    setDet(row.depot_detenteur ?? "");
+  }, [row.depot_recu_le, row.depot_detenteur]);
+  return (
+    <div className="space-y-1">
+      <input
+        type="date"
+        value={date}
+        onChange={(e) => setDate(e.target.value)}
+        onBlur={() => {
+          if ((date || null) !== (row.depot_recu_le ?? null))
+            void onSave({ depot_recu_le: date || null });
+        }}
+        className="input w-36 py-0.5 text-xs"
+        title={
+          row.depot_recu_le
+            ? "Date de réception du dépôt"
+            : `Date à compléter${row.date_debut ? ` (bail débuté le ${row.date_debut})` : ""}`
+        }
+      />
+      <input
+        value={det}
+        onChange={(e) => setDet(e.target.value)}
+        onBlur={() => {
+          if ((det.trim() || null) !== (row.depot_detenteur ?? null))
+            void onSave({ depot_detenteur: det.trim() || null });
+        }}
+        placeholder="détenteur à préciser"
+        className="input w-36 py-0.5 text-[11px]"
+        title="Qui détient l'argent du dépôt"
+      />
+    </div>
+  );
+}
+
 export default function DepotsPage() {
   const { currentEntrepriseId } = useImmobilierLayout();
   const [data, setData] = useState<Overview | null>(null);
@@ -376,12 +424,14 @@ export default function DepotsPage() {
                         détail au moment de le rendre. */}
                     <td className="px-3 py-2.5 text-xs text-white/60">
                       {r.montant > 0 ? (
-                        <>
-                          {r.depot_recu_le || "date inconnue"}
-                          <span className="block text-[11px] text-white/40">
-                            {r.depot_detenteur || "détenteur non précisé"}
-                          </span>
-                        </>
+                        <DepotInfosCell
+                          row={r}
+                          onSave={async (patch) => {
+                            const ok = await patchBail(r.bail_id, patch);
+                            if (ok) void load();
+                            return ok;
+                          }}
+                        />
                       ) : (
                         <span className="text-white/25">—</span>
                       )}

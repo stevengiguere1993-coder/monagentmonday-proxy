@@ -304,6 +304,14 @@ class Logement(Base, TimestampUpdateMixin):
         Numeric(10, 2), nullable=True
     )
 
+    # Gestion EXTERNE (retour Phil 2026-09-09) : nom du locataire,
+    # FACULTATIF, sans fiche ni bail — pour cocher « payé » avec le
+    # nom à côté quand le rapport mensuel du gestionnaire arrive.
+    # Effacé quand l'unité redevient vacante. Colonne additive.
+    locataire_externe_nom: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True
+    )
+
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 

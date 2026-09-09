@@ -38,6 +38,7 @@ from app.models.immobilier import (
     BailStatus,
     FactureExterne,
     Immeuble,
+    Locataire,
     Logement,
     PaiementExterne,
 )
@@ -84,10 +85,16 @@ class PaiementExterneRow(BaseModel):
     #: possibles — retour Phil 2026-07-22).
     montant: Optional[float] = None
     paye_le: Optional[date] = None
-    #: Manquant du MOIS (attendu − reçu, borné à 0). Il n'y a pas de
-    #: solde cumulatif en gestion externe : on ne tient pas le compte de
-    #: chaque locataire, seulement le rapport mensuel du gestionnaire.
+    #: Solde CUMULATIF dû sur l'unité (retour Phil 2026-09-09 : « en
+    #: gestion externe, quand il y a un solde, il n'est pas suivi de
+    #: mois en mois ») : Σ attendu − Σ reçu depuis le premier mois
+    #: suivi de l'immeuble, borné à 0. Même lecture qu'en interne.
     solde_total: float = 0.0
+    #: Un mois antérieur reste dû (badge, comme en interne).
+    solde_anterieur: bool = False
+    #: Nom du locataire (facultatif, saisi sur le logement ; bail
+    #: résiduel en filet) — affiché « Gestion externe — Nom ».
+    locataire_nom: Optional[str] = None
 
 
 class PaiementExterneOverview(BaseModel):
@@ -104,10 +111,15 @@ class PaiementExterneOverview(BaseModel):
 _ORDRE_ETAT = {"retard": 0, "partiel": 1, "attente": 2, "paye": 3, "aucun": 4}
 
 
+def _mois_suivant(d: date) -> date:
+    return date(d.year + (1 if d.month == 12 else 0), 1 if d.month == 12 else d.month + 1, 1)
+
+
 async def _rows_externes(
     db, logements: list, month_start: date
 ) -> List[PaiementExterneRow]:
-    """Croisement logements × paiements externes pour un mois.
+    """Croisement logements × paiements externes pour un mois, avec le
+    SOLDE CUMULATIF de chaque unité et le nom du locataire.
 
     Partagé par la sous-page d'un immeuble et par la vue portefeuille
     (page Paiements générale) — une seule définition des états.
@@ -118,13 +130,12 @@ async def _rows_externes(
 
     # Loyer attendu par logement — hiérarchie du loyer effectif (retour
     # client 2026-08-14) : en gestion EXTERNE, le loyer SAISI sur le
-    # logement EST la vérité. Avant, un bail actif résiduel (import,
-    # bascule interne→externe) primait alors que l'onglet Baux est caché
-    # en externe : le loyer modifié sur la fiche ne se reflétait jamais
-    # ici. Le bail ne sert plus que de filet quand rien n'est saisi.
+    # logement EST la vérité ; un bail résiduel ne sert que de filet
+    # (loyer ET nom du locataire).
     from app.services.loyer_effectif import loyer_effectif
+    from app.services.locatif_demarrage import get_demarrage
 
-    bail_par_logement: dict[int, float] = {}
+    bail_par_logement: dict[int, Bail] = {}
     for b in (
         await db.execute(
             select(Bail).where(
@@ -133,10 +144,23 @@ async def _rows_externes(
             )
         )
     ).scalars().all():
-        bail_par_logement[b.logement_id] = float(b.loyer_mensuel or 0)
+        bail_par_logement[b.logement_id] = b
+    noms_bail: dict[int, str] = {}
+    loc_ids = {b.locataire_id for b in bail_par_logement.values() if b.locataire_id}
+    if loc_ids:
+        locs = {
+            loc.id: loc.full_name
+            for loc in (
+                await db.execute(select(Locataire).where(Locataire.id.in_(list(loc_ids))))
+            ).scalars().all()
+        }
+        for lid, b in bail_par_logement.items():
+            if locs.get(b.locataire_id):
+                noms_bail[lid] = locs[b.locataire_id]
     loyer_par_logement: dict[int, Optional[float]] = {}
     for lg in logements:
-        loyer_bail = bail_par_logement.get(lg.id)
+        b = bail_par_logement.get(lg.id)
+        loyer_bail = float(b.loyer_mensuel or 0) if b is not None else None
         # Rien n'est attendu d'une unité ni louée (bail) ni « occupée ».
         if loyer_bail is None and lg.status != "occupe":
             loyer_par_logement[lg.id] = None
@@ -145,36 +169,46 @@ async def _rows_externes(
             lg, loyer_bail, gestion_externe=True
         )
 
-    paiements: dict[int, PaiementExterne] = {}
+    # Historique complet jusqu'au mois affiché (cumul), borné au
+    # démarrage du pôle.
+    demarrage = await get_demarrage()
+    hist: dict[int, dict[date, PaiementExterne]] = {}
     for p in (
         await db.execute(
             select(PaiementExterne).where(
                 PaiementExterne.logement_id.in_(log_ids),
-                PaiementExterne.mois_couvert == month_start,
+                PaiementExterne.mois_couvert <= month_start,
+                PaiementExterne.mois_couvert >= demarrage,
             )
         )
     ).scalars().all():
-        paiements[p.logement_id] = p
+        hist.setdefault(p.logement_id, {})[p.mois_couvert] = p
+    # Borne d'entrée : le premier mois pour lequel un rapport du
+    # gestionnaire a été saisi sur l'IMMEUBLE — avant, l'unité n'était pas
+    # suivie, on ne lui fabrique pas de dette.
+    imm_par_logement = {lg.id: lg.immeuble_id for lg in logements}
+    premier_par_immeuble: dict[int, date] = {}
+    for lid, mp in hist.items():
+        iid = imm_par_logement.get(lid)
+        m0 = min(mp)
+        if iid is not None:
+            premier_par_immeuble[iid] = min(premier_par_immeuble.get(iid, m0), m0)
 
     # Rien reçu passé l'échéance + délai de grâce = « retard », comme en
     # interne. Pas de jour d'échéance par bail ici : le gestionnaire
     # rapporte au mois, on garde le 1er + grâce.
     today = datetime.now(timezone.utc).date()
     en_retard = today > seuil_retard(month_start, 1)
-    #: Mois strictement FUTUR : rien n'y est encore dû — le solde
-    #: reste à zéro tant qu'aucune saisie n'existe (retour Phil
-    #: 2026-08-26 : « pourquoi je vois un solde sur Elgin en
-    #: septembre quand ils ont tous payé en août ? »).
+    #: Mois strictement FUTUR : rien n'y est encore dû.
     mois_futur = month_start > today.replace(day=1)
 
     rows: List[PaiementExterneRow] = []
     for lg in logements:
-        attendu = loyer_par_logement.get(lg.id)
-        p = paiements.get(lg.id)
-        # Mois DÉJÀ réglé (au moins un paiement) : l'attendu FIGÉ à la
-        # saisie fait foi — changer le loyer du logement ensuite ne
-        # réécrit pas l'historique (retour client 2026-08-14). Les
-        # lignes d'avant la colonne (NULL) gardent le fallback courant.
+        attendu_courant = loyer_par_logement.get(lg.id)
+        mp = hist.get(lg.id, {})
+        p = mp.get(month_start)
+        attendu = attendu_courant
+        # Mois DÉJÀ réglé : l'attendu FIGÉ à la saisie fait foi.
         if p is not None and p.loyer_attendu is not None:
             attendu = float(p.loyer_attendu)
         recu = (
@@ -182,7 +216,6 @@ async def _rows_externes(
             if p is not None and p.montant is not None
             else ((attendu or 0.0) if p is not None else 0.0)
         )
-        # État : cumul reçu vs attendu (partiels possibles).
         if p is not None and (attendu is None or recu >= attendu - 0.005):
             etat = "paye"
         elif p is not None:
@@ -191,6 +224,31 @@ async def _rows_externes(
             etat = "retard" if en_retard else "attente"
         else:
             etat = "aucun"
+
+        # Solde cumulatif SIGNÉ des mois précédents (un trop-payé se
+        # reporte), depuis la borne d'entrée de l'immeuble.
+        cumul_ant = 0.0
+        borne = premier_par_immeuble.get(lg.immeuble_id)
+        if borne is not None and (attendu_courant is not None or mp):
+            m = max(borne, demarrage)
+            while m < month_start:
+                pm = mp.get(m)
+                if pm is not None:
+                    att_m = (
+                        float(pm.loyer_attendu)
+                        if pm.loyer_attendu is not None
+                        else (attendu_courant or 0.0)
+                    )
+                    recu_m = float(pm.montant) if pm.montant is not None else att_m
+                    cumul_ant += att_m - recu_m
+                elif attendu_courant is not None and lg.status == "occupe":
+                    cumul_ant += attendu_courant
+                m = _mois_suivant(m)
+        solde_ant = max(0.0, cumul_ant)
+        if mois_futur and p is None:
+            solde_total = solde_ant
+        else:
+            solde_total = max(0.0, cumul_ant + (attendu or 0.0) - recu)
         rows.append(
             PaiementExterneRow(
                 logement_id=lg.id,
@@ -201,9 +259,11 @@ async def _rows_externes(
                 etat=etat,
                 montant=round(recu, 2) if p is not None else None,
                 paye_le=p.paye_le if p is not None else None,
-                solde_total=0.0
-                if mois_futur and p is None
-                else round(max(0.0, (attendu or 0.0) - recu), 2),
+                solde_total=round(solde_total, 2),
+                solde_anterieur=solde_ant > 0.005,
+                locataire_nom=(
+                    getattr(lg, "locataire_externe_nom", None) or noms_bail.get(lg.id)
+                ),
             )
         )
     rows.sort(
@@ -268,6 +328,8 @@ class LoyerExterneRow(BaseModel):
     paye_le: Optional[date] = None
     etat: str
     solde_total: float = 0.0
+    solde_anterieur: bool = False
+    locataire_nom: Optional[str] = None
 
 
 class LoyersExternesOverview(BaseModel):
@@ -351,6 +413,8 @@ async def loyers_externes_overview(
                 paye_le=r.paye_le,
                 etat=r.etat,
                 solde_total=r.solde_total,
+                solde_anterieur=r.solde_anterieur,
+                locataire_nom=r.locataire_nom,
             )
         )
     rows.sort(
@@ -435,9 +499,15 @@ async def marquer_paiement_externe(
         if attendu_courant is not None:
             existing.loyer_attendu = attendu_courant
     if payload.montant is not None:
-        existing.montant = round(
-            float(existing.montant or 0) + payload.montant, 2
-        )
+        # Cumul du mois : un mois déjà « payé au complet » (montant
+        # NULL) vaut l'attendu figé, pas 0 (bug latent 2026-09-09).
+        if existing.montant is not None:
+            base = float(existing.montant)
+        elif existing.paye_le is not None and existing.loyer_attendu is not None:
+            base = float(existing.loyer_attendu)
+        else:
+            base = 0.0
+        existing.montant = round(base + payload.montant, 2)
     else:
         existing.montant = None  # payé au complet (= loyer attendu figé)
     existing.paye_le = today

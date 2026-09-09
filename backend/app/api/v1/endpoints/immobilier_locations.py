@@ -446,6 +446,11 @@ async def create_dossier(
     lg = await db.get(Logement, logement_id)
     if lg is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Logement introuvable.")
+    # Gestion EXTERNE : pas de relocation dans Kratos (2026-09-09).
+    from app.services.gestion_externe import erreur_externe, immeuble_est_externe
+
+    if await immeuble_est_externe(db, lg.immeuble_id):
+        raise erreur_externe("pas de dossier de relocation dans Kratos.")
 
     # Un seul dossier ACTIF par logement — sinon on s'y perd.
     existing = (
