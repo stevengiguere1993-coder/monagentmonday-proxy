@@ -68,6 +68,8 @@ export type BailDocument = {
   remplace_document_id?: number | null;
   /** false = simple communication (rappel, avis d'accès…). */
   signature_requise?: boolean;
+  /** Pièce d'un dossier TAL (2026-09-09). */
+  tal_dossier_id?: number | null;
 };
 
 /** Téléverse un document au dossier (bouton « Importer »). */
@@ -79,6 +81,8 @@ export async function importDocument(opts: {
   locataireId?: number;
   logementId?: number;
   immeubleId?: number;
+  /** Rattache la pièce à un dossier TAL (bail/locataire déduits). */
+  talDossierId?: number;
 }): Promise<BailDocument> {
   const fd = new FormData();
   fd.append("file", opts.file);
@@ -91,6 +95,8 @@ export async function importDocument(opts: {
     fd.append("logement_id", String(opts.logementId));
   if (opts.immeubleId != null)
     fd.append("immeuble_id", String(opts.immeubleId));
+  if (opts.talDossierId != null)
+    fd.append("tal_dossier_id", String(opts.talDossierId));
   const r = await authedFetch("/api/v1/immobilier/documents/import", {
     method: "POST",
     body: fd
@@ -1419,6 +1425,14 @@ export function DocsList({
                     <span className="text-sm font-medium text-white">
                       {d.titre}
                     </span>
+                    {d.tal_dossier_id != null ? (
+                      <span
+                        className="ml-2 rounded bg-violet-500/15 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-violet-300"
+                        title="Pièce d'un dossier TAL — se gère dans la section « Dossier TAL » de la fiche locataire"
+                      >
+                        TAL
+                      </span>
+                    ) : null}
                     {d.source === "importe" ? (
                       <span className="ml-2 rounded bg-sky-500/15 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-sky-300">
                         importé

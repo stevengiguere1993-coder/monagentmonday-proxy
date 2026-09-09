@@ -13,7 +13,8 @@ type Hit = {
     | "facture"
     | "project"
     | "bon"
-    | "employe";
+    | "employe"
+    | "locataire";
   id: number;
   title: string;
   subtitle: string | null;
@@ -27,7 +28,8 @@ const KIND_LABEL: Record<Hit["kind"], string> = {
   facture: "Facture",
   project: "Projet",
   bon: "Bon de travail",
-  employe: "Employé"
+  employe: "Employé",
+  locataire: "Locataire"
 };
 
 const KIND_ORDER: Hit["kind"][] = [
@@ -37,7 +39,8 @@ const KIND_ORDER: Hit["kind"][] = [
   "facture",
   "project",
   "bon",
-  "employe"
+  "employe",
+  "locataire"
 ];
 
 export function GlobalSearch() {
@@ -125,7 +128,7 @@ export function GlobalSearch() {
         onChange={(e) => setQ(e.target.value)}
         onFocus={() => setOpen(true)}
         onKeyDown={onKey}
-        placeholder="Rechercher client, prospect, soumission…"
+        placeholder="Rechercher client, prospect, locataire, soumission…"
         className="w-full rounded-lg border border-brand-800 bg-brand-900 py-2 pl-9 pr-9 text-sm text-white placeholder:text-white/40 focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/40"
       />
       {loading ? (

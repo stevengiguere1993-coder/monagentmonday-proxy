@@ -30,6 +30,7 @@ from app.integrations.email_graph import EmailAttachment, get_mailer
 from app.models.immobilier import (
     Bail,
     ImmDocument,
+    ImmTalDossier,
     Locataire,
     LocataireCommunication,
 )
@@ -96,6 +97,8 @@ class DocumentRead(BaseModel):
     #: False pour les simples communications (avis d'accès, rappel de
     #: paiement…) — elles vivent dans le journal, pas au dossier.
     signature_requise: bool = True
+    #: Pièce d'un dossier TAL (mise en demeure, décision…) — 2026-09-09.
+    tal_dossier_id: Optional[int] = None
 
 
 def _est_dossier(d: ImmDocument) -> bool:
@@ -134,6 +137,7 @@ def _doc_read(d: ImmDocument) -> DocumentRead:
         filename=getattr(d, "filename", None),
         remplace_document_id=getattr(d, "remplace_document_id", None),
         signature_requise=d.type not in SIGNATURE_NON_REQUISE,
+        tal_dossier_id=getattr(d, "tal_dossier_id", None),
     )
 
 
@@ -745,6 +749,7 @@ async def _import_document(
     logement_id: Optional[int] = None,
     immeuble_id: Optional[int] = None,
     remplace_document_id: Optional[int] = None,
+    tal_dossier_id: Optional[int] = None,
 ) -> ImmDocument:
     data, fname = await _read_upload(file)
     obj = ImmDocument(
@@ -752,6 +757,7 @@ async def _import_document(
         locataire_id=locataire_id,
         logement_id=logement_id,
         immeuble_id=immeuble_id,
+        tal_dossier_id=tal_dossier_id,
         type=doc_type,
         titre=(titre or "").strip() or fname,
         source="importe",
@@ -776,6 +782,7 @@ async def import_document(
     locataire_id: Optional[int] = Form(None),
     logement_id: Optional[int] = Form(None),
     immeuble_id: Optional[int] = Form(None),
+    tal_dossier_id: Optional[int] = Form(None),
 ) -> DocumentRead:
     """Dépose un document au dossier (bouton « Importer » des sections
     Documents). Aucun envoi, aucune signature : c'est une pièce classée.
@@ -785,8 +792,22 @@ async def import_document(
     ⚠️ Un PDF de type « bail » rattaché à un BAIL doit passer par
     ``POST /baux/{id}/document`` (c'est lui qui pose ``bail.document_id``
     et active le bail) — ici, un « bail » n'est qu'une pièce au dossier
-    du locataire, à joindre plus tard via « Joindre le bail signé »."""
+    du locataire, à joindre plus tard via « Joindre le bail signé ».
+
+    ``tal_dossier_id`` (2026-09-09) : la pièce est rattachée au dossier
+    TAL ET, par lui, au bail / locataire / logement du dossier — PAS de
+    second stockage, elle reste visible dans les Documents du locataire."""
     _require_volet(user)
+    if tal_dossier_id is not None:
+        dossier = await db.get(ImmTalDossier, tal_dossier_id)
+        if dossier is None:
+            raise HTTPException(
+                status_code=404, detail="Dossier TAL introuvable."
+            )
+        bail_id = bail_id or dossier.bail_id
+        locataire_id = locataire_id or dossier.locataire_id
+        logement_id = logement_id or dossier.logement_id
+        immeuble_id = immeuble_id or dossier.immeuble_id
     if not any([bail_id, locataire_id, logement_id, immeuble_id]):
         raise HTTPException(
             status_code=422,
@@ -801,6 +822,7 @@ async def import_document(
         locataire_id=locataire_id,
         logement_id=logement_id,
         immeuble_id=immeuble_id,
+        tal_dossier_id=tal_dossier_id,
     )
     await db.commit()
     await db.refresh(obj)

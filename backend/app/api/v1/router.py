@@ -62,6 +62,7 @@ from app.api.v1.endpoints import (
     immobilier_communications,
     immobilier_documents,
     immobilier_exports,
+    immobilier_tal_garants,
     immobilier_extras,
     immobilier_import_excel,
     immobilier_locations,
@@ -499,6 +500,10 @@ api_router.include_router(
 # Documents locatifs conservés (avis TAL, trousse) + envoi signature.
 api_router.include_router(
     immobilier_documents.router, dependencies=DEP_IMMOBILIER
+)
+# Dossiers TAL + garants/contacts d'un locataire (2026-09-09).
+api_router.include_router(
+    immobilier_tal_garants.router, dependencies=DEP_IMMOBILIER
 )
 # Page Communications — envois courriel sans signature + audit.
 api_router.include_router(

@@ -44,6 +44,14 @@ from app.api.deps import CurrentUser, DBSession
 from app.models.user import User
 from app.services.locatif_demarrage import get_demarrage, set_demarrage
 from app.services.loyer_echeance import paiement_en_retard, seuil_retard
+from app.services.tal_garants import (
+    appliquer_date_miroir,
+    chiffres,
+    contact_qui_matche,
+    contacts_par_locataire,
+    normaliser,
+    payeur_de,
+)
 from app.services.permissions_service import require_capability
 from app.models.entreprise import Entreprise
 from app.models.bon_travail import BonTravail
@@ -2693,9 +2701,42 @@ async def list_locataires(
 ) -> List[LocataireListItem]:
     _require_volet(user)
     q = select(Locataire).order_by(Locataire.full_name.asc())
-    if search:
-        q = q.where(Locataire.full_name.ilike(f"%{search}%"))
-    rows = (await db.execute(q)).scalars().all()
+    rows = list((await db.execute(q)).scalars().all())
+
+    # Recherche (2026-09-09) : nom, courriel, téléphone (chiffres) ET les
+    # garants/contacts du locataire — accents insensibles, filtrée en
+    # Python après chargement (volumes < 1 000 : simplicité avant
+    # performance). ``match_via`` dit POURQUOI la fiche remonte quand ce
+    # n'est pas son nom (« garant : Jacques Roy »).
+    match_via: dict[int, str] = {}
+    if search and search.strip():
+        needle = normaliser(search)
+        needle_chiffres = chiffres(search)
+        contacts = await contacts_par_locataire(db, [r.id for r in rows])
+        gardes = []
+        for r in rows:
+            if needle and needle in normaliser(r.full_name):
+                gardes.append(r)
+                continue
+            if needle and r.email and needle in normaliser(r.email):
+                match_via[r.id] = f"courriel : {r.email}"
+                gardes.append(r)
+                continue
+            if (
+                needle_chiffres
+                and len(needle_chiffres) >= 3
+                and needle_chiffres in chiffres(r.phone)
+            ):
+                match_via[r.id] = f"téléphone : {r.phone}"
+                gardes.append(r)
+                continue
+            via = contact_qui_matche(
+                contacts.get(r.id, []), needle, needle_chiffres
+            )
+            if via:
+                match_via[r.id] = via
+                gardes.append(r)
+        rows = gardes
 
     # Immeuble/logement du bail ACTIF le plus récent de chaque locataire
     # (colonnes cliquables de la page Locataires).
@@ -2746,6 +2787,7 @@ async def list_locataires(
     out: List[LocataireListItem] = []
     for r in rows:
         item = LocataireListItem.model_validate(r)
+        item.match_via = match_via.get(r.id)
         pair = habite.get(r.id)
         if pair:
             lg, im = pair
@@ -4053,9 +4095,19 @@ async def update_bail(
     # payload signifie « ne touche pas », pas « efface » (sinon 500).
     if data.get("jour_echeance") is None:
         data.pop("jour_echeance", None)
+    # Dossier TAL (2026-09-09) : la date est un MIROIR des dossiers
+    # imm_tal_dossiers — poser une date ouvre un dossier non-paiement s'il
+    # n'y en a pas d'en cours ; null les ferme. Traité à part, APRÈS les
+    # autres champs, par le service qui tient les deux sens cohérents.
+    tal_miroir_present = "tal_dossier_ouvert_le" in data
+    tal_miroir = data.pop("tal_dossier_ouvert_le", None)
     for k, v in data.items():
         setattr(obj, k, v)
     obj.updated_at = _now()
+    if tal_miroir_present:
+        await appliquer_date_miroir(
+            db, obj, tal_miroir, getattr(user, "email", None)
+        )
 
     # Sync statut logement si bail terminé/résilié
     if (
@@ -4514,6 +4566,13 @@ class LoyerOverviewRow(BaseModel):
     #: Dossier ouvert au TAL sur ce bail (non-paiement) — badge +
     #: coche sur la ligne, pour que l'équipe voie le recours lancé.
     tal_dossier_ouvert_le: Optional[date] = None
+    #: Garants / contacts ACTIFS du locataire (noms) — cherchables depuis
+    #: la page Paiements (« un virement de Jacques alors que le locataire
+    #: est Sébastien » — retour Phil 2026-09-09).
+    garants: List[str] = []
+    #: Contact qui PAIE le loyer (case « paie le loyer »), sinon None —
+    #: affiché « paie : Jacques Roy » sous le nom du locataire.
+    payeur_nom: Optional[str] = None
     #: Le mois affiché est réglé mais un mois ANTÉRIEUR du bail ne
     #: l'est pas — la ligne remonte avec un badge « Solde antérieur »
     #: au lieu de dormir en vert (retour Phil 2026-08-26).
@@ -4728,6 +4787,9 @@ async def loyers_overview(
             )
         ).scalars().all():
             locataires[loc.id] = loc
+    # Garants / contacts actifs de TOUS ces locataires — UN seul SELECT
+    # (jamais de N+1 sur la vue quotidienne).
+    contacts_by_loc = await contacts_par_locataire(db, loc_ids)
 
     # Paiements du mois : PLUSIEURS lignes possibles par bail (paiements
     # partiels — retour Steven 2026-07-20) → on garde la liste et on somme.
@@ -4967,10 +5029,13 @@ async def loyers_overview(
         total_solde_du += solde
 
         pro = prochains.get(b.logement_id) if b.logement_id else None
+        contacts_loc = contacts_by_loc.get(loc.id, []) if loc else []
         rows.append(
             LoyerOverviewRow(
                 bail_id=b.id,
                 tal_dossier_ouvert_le=b.tal_dossier_ouvert_le,
+                garants=[c.full_name for c in contacts_loc],
+                payeur_nom=payeur_de(contacts_loc),
                 solde_anterieur=bool(
                     ps
                     and paye_mois >= du_mois - 0.005

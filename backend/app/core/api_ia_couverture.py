@@ -118,6 +118,9 @@ TABLES_COUVERTES: frozenset[str] = frozenset({
     "imm_immeuble_ownerships",
     "imm_immeubles",
     "imm_locataire_communications",
+    # Garants & contacts d'un locataire (2026-09-09) — listés via
+    # kratos_list_entities(locataire_contacts) + détail locataire_contact.
+    "imm_locataire_contacts",
     "imm_locataires",
     "imm_location_annonces",
     "imm_location_dossiers",
@@ -128,6 +131,9 @@ TABLES_COUVERTES: frozenset[str] = frozenset({
     "imm_paiements_loyer",
     "imm_relances_loyer",
     "imm_releves31",
+    # Dossiers TAL (2026-09-09) — kratos_list_entities(tal_dossiers) +
+    # détail tal_dossier ; routes REST /immobilier/tal-dossiers.
+    "imm_tal_dossiers",
     "immeuble_depenses",
     "inv_distributions",
     "inv_documents",

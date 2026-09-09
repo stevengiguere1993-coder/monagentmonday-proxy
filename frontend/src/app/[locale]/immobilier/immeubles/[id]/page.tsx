@@ -36,6 +36,10 @@ import { useSearchParams } from "next/navigation";
 
 import { Link, useRouter } from "@/i18n/navigation";
 import { authedFetch, getToken } from "@/lib/auth";
+import {
+  ouvrirDossierTal,
+  TalPastille
+} from "@/components/immobilier/tal-garants";
 import { ImmobilierTopbar, useImmobilierLayout } from "../../layout";
 import { EntityDriveSection } from "@/components/drive/EntityDriveSection";
 import { ContratGestionTab } from "./contrat-gestion-tab";
@@ -818,6 +822,8 @@ export default function ImmeubleDetailPage({
               {gestionExterne ? (
                 <span className="badge badge-sky">Gestion externe</span>
               ) : null}
+              {/* Dossiers TAL en cours dans l'immeuble (point 5). */}
+              <TalPastille immeubleId={immeubleId} />
             </div>
           </div>
 
@@ -1033,7 +1039,10 @@ export default function ImmeubleDetailPage({
             />
           ) : null}
           {tab === "paiements" ? (
-            <PaiementsMoisSection immeubleId={immeubleId} />
+            <PaiementsMoisSection
+              immeubleId={immeubleId}
+              gestionExterne={gestionExterne}
+            />
           ) : null}
           {tab === "baux" ? (
             <BauxTab
@@ -2895,6 +2904,9 @@ type LoyerRow = {
   logement_statut?: string | null;
   /** Dossier ouvert au TAL sur ce bail (non-paiement). */
   tal_dossier_ouvert_le?: string | null;
+  /** Garants / contacts actifs + celui qui paie le loyer (point 8). */
+  garants?: string[];
+  payeur_nom?: string | null;
   /** Bail résilié/terminé en cours de mois : la ligne reste dans le
    *  mois couvert avec un badge « Bail terminé le X » (M7). */
   bail_statut?: string;
@@ -2913,7 +2925,15 @@ const ETAT_ORDRE: Record<string, number> = {
   vacant: 4
 };
 
-function PaiementsMoisSection({ immeubleId }: { immeubleId: number }) {
+function PaiementsMoisSection({
+  immeubleId,
+  gestionExterne = false
+}: {
+  immeubleId: number;
+  /** Gestion externe : pas de recours TAL de notre côté (même garde
+   *  que la page Paiements). */
+  gestionExterne?: boolean;
+}) {
   const [rows, setRows] = useState<LoyerRow[] | null>(null);
   const [mois, setMois] = useState<string>(() => {
     const d = new Date();
@@ -3072,38 +3092,22 @@ function PaiementsMoisSection({ immeubleId }: { immeubleId: number }) {
     }
   }
 
-  // Coche « dossier TAL ouvert » — même geste que la page Paiements.
-  async function toggleTal(row: LoyerRow) {
-    const ouvre = !row.tal_dossier_ouvert_le;
+  // « Ouvrir un dossier TAL » — même geste que la page Paiements : crée
+  // le dossier (non-paiement) ; le suivi (statut, pièces, fermeture) se
+  // fait dans la fiche du locataire (retour Phil 2026-09-09).
+  async function ouvrirTal(row: LoyerRow) {
     if (
-      !ouvre &&
       !window.confirm(
-        "Retirer le suivi « dossier TAL ouvert » sur ce bail ?"
+        "Ouvrir un dossier TAL (non-paiement) pour ce bail ? Il sera visible par toute l'équipe et se gère depuis la fiche du locataire."
       )
     )
       return;
     try {
-      const r = await authedFetch(
-        `/api/v1/immobilier/baux/${row.bail_id}`,
-        {
-          method: "PATCH",
-          body: JSON.stringify({
-            tal_dossier_ouvert_le: ouvre
-              ? new Date().toISOString().slice(0, 10)
-              : null
-          })
-        }
-      );
-      if (!r.ok)
-        throw new Error((await r.text()).slice(0, 200) || `HTTP ${r.status}`);
-      setInfo(
-        ouvre
-          ? "Dossier TAL marqué ouvert — visible par toute l'équipe."
-          : "Suivi TAL retiré."
-      );
+      await ouvrirDossierTal(row.bail_id);
+      setInfo("Dossier TAL ouvert — suivi dans la fiche du locataire.");
       await load();
     } catch (e) {
-      setErr(`Mise à jour TAL échouée : ${(e as Error).message}`);
+      setErr(`Ouverture du dossier TAL échouée : ${(e as Error).message}`);
     }
   }
 
@@ -3482,10 +3486,18 @@ function PaiementsMoisSection({ immeubleId }: { immeubleId: number }) {
                     {r.tal_dossier_ouvert_le ? (
                       <span
                         className="ml-2 inline-flex items-center gap-1 rounded bg-violet-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-violet-300"
-                        title={`Dossier ouvert au TAL le ${r.tal_dossier_ouvert_le} — décochable via le bouton TAL de la ligne`}
+                        title={`Dossier ouvert au TAL le ${r.tal_dossier_ouvert_le} — suivi dans la fiche du locataire`}
                       >
                         <Scale className="h-3 w-3" /> TAL ouvert
                       </span>
+                    ) : null}
+                    {r.payeur_nom ? (
+                      <p
+                        className="mt-0.5 text-[11px] text-emerald-300"
+                        title={`Le loyer est payé par ${r.payeur_nom} (garant / contact) — utile pour reconnaître le virement`}
+                      >
+                        paie : {r.payeur_nom}
+                      </p>
                     ) : null}
                   </td>
                   <td className="py-2 pr-3 font-mono text-xs">
@@ -3593,23 +3605,35 @@ function PaiementsMoisSection({ immeubleId }: { immeubleId: number }) {
                           )}
                           Relancer
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => void toggleTal(r)}
-                          title={
-                            r.tal_dossier_ouvert_le
-                              ? `Dossier TAL ouvert le ${r.tal_dossier_ouvert_le} — cliquer pour retirer le suivi`
-                              : "Marquer qu'un dossier de non-paiement est ouvert au TAL pour ce bail"
-                          }
-                          className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-semibold transition ${
-                            r.tal_dossier_ouvert_le
-                              ? "border-violet-500/40 bg-violet-500/10 text-violet-300 hover:bg-violet-500/20"
-                              : "border-white/15 bg-white/5 text-white/50 hover:bg-white/10 hover:text-white/80"
-                          }`}
-                        >
-                          <Scale className="h-3 w-3" />
-                          {r.tal_dossier_ouvert_le ? "TAL ouvert" : "TAL"}
-                        </button>
+                        {/* Dossier TAL (point 5) : ouvrir = création ;
+                            ouvert = lien vers la fiche du locataire où
+                            il se suit. Pas de recours en gestion externe. */}
+                        {gestionExterne ? null : r.tal_dossier_ouvert_le &&
+                          r.locataire_id != null ? (
+                          <Link
+                            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                            href={
+                              `/immobilier/locataires/${r.locataire_id}` as any
+                            }
+                            title={`Dossier TAL ouvert le ${r.tal_dossier_ouvert_le} — ouvrir la fiche du locataire (suivi, pièces, fermeture)`}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-violet-500/40 bg-violet-500/10 px-2.5 py-1 text-xs font-semibold text-violet-300 transition hover:bg-violet-500/20"
+                          >
+                            <Scale className="h-3 w-3" /> TAL ouvert
+                          </Link>
+                        ) : r.tal_dossier_ouvert_le ? (
+                          <span className="inline-flex items-center gap-1.5 rounded-lg border border-violet-500/40 bg-violet-500/10 px-2.5 py-1 text-xs font-semibold text-violet-300">
+                            <Scale className="h-3 w-3" /> TAL ouvert
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => void ouvrirTal(r)}
+                            title="Ouvrir un dossier TAL (non-paiement) pour ce bail — visible par toute l'équipe"
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 text-xs font-semibold text-white/50 transition hover:bg-white/10 hover:text-white/80"
+                          >
+                            <Scale className="h-3 w-3" /> Ouvrir un dossier TAL
+                          </button>
+                        )}
                         {(r.montant_paye ?? 0) > 0 ? (
                           correctingId === r.bail_id ? (
                             <CorrectionOptions
@@ -3655,23 +3679,35 @@ function PaiementsMoisSection({ immeubleId }: { immeubleId: number }) {
                             Corriger
                           </button>
                         )}
-                        <button
-                          type="button"
-                          onClick={() => void toggleTal(r)}
-                          title={
-                            r.tal_dossier_ouvert_le
-                              ? `Dossier TAL ouvert le ${r.tal_dossier_ouvert_le} — cliquer pour retirer le suivi`
-                              : "Marquer qu'un dossier de non-paiement est ouvert au TAL pour ce bail"
-                          }
-                          className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-semibold transition ${
-                            r.tal_dossier_ouvert_le
-                              ? "border-violet-500/40 bg-violet-500/10 text-violet-300 hover:bg-violet-500/20"
-                              : "border-white/15 bg-white/5 text-white/50 hover:bg-white/10 hover:text-white/80"
-                          }`}
-                        >
-                          <Scale className="h-3 w-3" />
-                          {r.tal_dossier_ouvert_le ? "TAL ouvert" : "TAL"}
-                        </button>
+                        {/* Dossier TAL (point 5) : ouvrir = création ;
+                            ouvert = lien vers la fiche du locataire où
+                            il se suit. Pas de recours en gestion externe. */}
+                        {gestionExterne ? null : r.tal_dossier_ouvert_le &&
+                          r.locataire_id != null ? (
+                          <Link
+                            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                            href={
+                              `/immobilier/locataires/${r.locataire_id}` as any
+                            }
+                            title={`Dossier TAL ouvert le ${r.tal_dossier_ouvert_le} — ouvrir la fiche du locataire (suivi, pièces, fermeture)`}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-violet-500/40 bg-violet-500/10 px-2.5 py-1 text-xs font-semibold text-violet-300 transition hover:bg-violet-500/20"
+                          >
+                            <Scale className="h-3 w-3" /> TAL ouvert
+                          </Link>
+                        ) : r.tal_dossier_ouvert_le ? (
+                          <span className="inline-flex items-center gap-1.5 rounded-lg border border-violet-500/40 bg-violet-500/10 px-2.5 py-1 text-xs font-semibold text-violet-300">
+                            <Scale className="h-3 w-3" /> TAL ouvert
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => void ouvrirTal(r)}
+                            title="Ouvrir un dossier TAL (non-paiement) pour ce bail — visible par toute l'équipe"
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 text-xs font-semibold text-white/50 transition hover:bg-white/10 hover:text-white/80"
+                          >
+                            <Scale className="h-3 w-3" /> Ouvrir un dossier TAL
+                          </button>
+                        )}
                       </span>
                     )}
                   </td>

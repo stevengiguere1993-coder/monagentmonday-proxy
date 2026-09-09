@@ -854,6 +854,8 @@ async def ensure_immobilier_aux_tables() -> None:
             ImmDocPersoModele,
             ImmDocTemplate,
             ImmDocument,
+            ImmLocataireContact,
+            ImmTalDossier,
             PaiementExterne,
             LocataireCommunication,
             LocationAnnonce,
@@ -869,6 +871,10 @@ async def ensure_immobilier_aux_tables() -> None:
                     c,
                     tables=[
                         RelanceLoyer.__table__,
+                        # Dossiers TAL + garants/contacts (2026-09-09) —
+                        # AVANT imm_documents (FK tal_dossier_id).
+                        ImmTalDossier.__table__,
+                        ImmLocataireContact.__table__,
                         ImmCommunication.__table__,
                         LocataireCommunication.__table__,
                         LocationDossier.__table__,
@@ -2071,6 +2077,9 @@ async def init_db() -> None:
             # Dossier TAL ouvert sur un bail (non-paiement) — coché
             # depuis la page Paiements (2026-08-31).
             ("imm_baux", "tal_dossier_ouvert_le", "DATE"),
+            # Pièce rattachée à un dossier TAL (2026-09-09) : la table
+            # imm_documents existe déjà → colonne additive.
+            ("imm_documents", "tal_dossier_id", "INTEGER"),
             # Stratégies d'acquisition (août 2026, chantier staging) :
             # sélecteur de stratégie + balance de vente + horizon de
             # projection. NULL = comportement historique.

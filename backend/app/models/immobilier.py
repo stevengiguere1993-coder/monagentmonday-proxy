@@ -1267,6 +1267,15 @@ class ImmDocument(Base, TimestampUpdateMixin):
     drive_file_id: Mapped[Optional[str]] = mapped_column(
         String(128), nullable=True
     )
+    #: Pièce rattachée à un dossier TAL (mise en demeure, avis
+    #: d'audience, décision…) — PAS de second stockage : le document
+    #: vit ici, le dossier ne fait que pointer dessus (retour Phil
+    #: 2026-09-09, point 5). Colonne additive nullable → ajoutée au
+    #: démarrage par schema_check.
+    tal_dossier_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("imm_tal_dossiers.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
 
 
 class Releve31(Base, TimestampUpdateMixin):
@@ -1533,5 +1542,128 @@ class ImmDocTemplate(Base, TimestampUpdateMixin):
     )
     pdf_blob = deferred(mapped_column(LargeBinary, nullable=False))
     uploaded_by_email: Mapped[Optional[str]] = mapped_column(
+        String(256), nullable=True
+    )
+
+
+# ─── Dossier TAL (point 5, retour Phil 2026-09-09) ──────────────────────
+
+#: Motifs de recours au Tribunal administratif du logement — volontairement
+#: courts, pas de champs juridiques (Phil : « rien de compliqué »).
+TAL_MOTIFS: tuple[str, ...] = (
+    "non_paiement",
+    "retards",
+    "reprise",
+    "travaux",
+    "non_reconduction",
+    "troubles",
+    "autre",
+)
+
+#: Statuts d'un dossier. Tout ce qui n'est pas « ferme » compte comme un
+#: dossier EN COURS (pastilles, miroir ``Bail.tal_dossier_ouvert_le``).
+TAL_STATUTS: tuple[str, ...] = (
+    "a_ouvrir",
+    "ouvert",
+    "audience",
+    "decision",
+    "ferme",
+)
+TAL_STATUT_FERME = "ferme"
+
+
+class ImmTalDossier(Base, TimestampUpdateMixin):
+    """Dossier ouvert au TAL pour un bail — le SUIVI simple de l'équipe.
+
+    Remplace la seule date ``Bail.tal_dossier_ouvert_le`` (qui reste en
+    MIROIR : posée/effacée par les endpoints de ce dossier, et
+    inversement le PATCH bail qui pose la date crée un dossier). Les
+    pièces (mise en demeure, décision…) sont des ``imm_documents``
+    rattachés par ``tal_dossier_id``. Nouvelle table →
+    ensure_immobilier_aux_tables.
+    """
+
+    __tablename__ = "imm_tal_dossiers"
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    bail_id: Mapped[int] = mapped_column(
+        ForeignKey("imm_baux.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    # Dénormalisés depuis le bail pour les filtres (fiche locataire,
+    # pastilles logement/immeuble) sans jointure.
+    locataire_id: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True, index=True
+    )
+    logement_id: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True, index=True
+    )
+    immeuble_id: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True, index=True
+    )
+
+    motif: Mapped[str] = mapped_column(
+        String(32), nullable=False,
+        default="non_paiement", server_default="non_paiement",
+    )
+    statut: Mapped[str] = mapped_column(
+        String(24), nullable=False,
+        default="ouvert", server_default="ouvert", index=True,
+    )
+    numero_dossier: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True
+    )
+    ouvert_le: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    audience_le: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    decision_le: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_by_email: Mapped[Optional[str]] = mapped_column(
+        String(256), nullable=True
+    )
+
+
+# ─── Garants & contacts d'un locataire (point 8, 2026-09-09) ────────────
+
+#: Rôles d'un contact : garant, colocataire, occupant, contact d'urgence.
+CONTACT_ROLES: tuple[str, ...] = ("garant", "colocataire", "occupant", "urgence")
+
+
+class ImmLocataireContact(Base, TimestampUpdateMixin):
+    """Personne liée à un locataire SANS fiche complète (garant,
+    colocataire, occupant, contact d'urgence).
+
+    Retour Phil 2026-09-09 : « un virement de Jacques alors que le
+    locataire est Sébastien : quand je cherche Jacques, je vois
+    Sébastien ». D'où ``paie_le_loyer`` (affiché sur la ligne Paiements)
+    et l'indexation du nom dans les recherches. Nouvelle table →
+    ensure_immobilier_aux_tables.
+    """
+
+    __tablename__ = "imm_locataire_contacts"
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    locataire_id: Mapped[int] = mapped_column(
+        ForeignKey("imm_locataires.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    role: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="garant", server_default="garant"
+    )
+    full_name: Mapped[str] = mapped_column(
+        String(255), nullable=False, index=True
+    )
+    email: Mapped[Optional[str]] = mapped_column(String(320), nullable=True)
+    phone: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    #: Lien avec le locataire (« père », « conjointe », « colocataire »…).
+    relation: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    #: C'est LUI qui paie le loyer (virements à son nom).
+    paie_le_loyer: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    actif: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
+    created_by_email: Mapped[Optional[str]] = mapped_column(
         String(256), nullable=True
     )

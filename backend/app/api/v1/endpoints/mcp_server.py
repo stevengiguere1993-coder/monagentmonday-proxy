@@ -648,6 +648,9 @@ _LIST_GENERIC_CHOICES = (
     "devlog_projects",
     "entreprises",
     "projects",
+    # Immobilier (2026-09-09) : dossiers TAL et garants/contacts.
+    "tal_dossiers",
+    "locataire_contacts",
 )
 
 _LIMIT_PROP = {

@@ -31,6 +31,10 @@ import { TableauSuiviBaux } from "@/components/immobilier/tableau-suivi-baux";
 import { type SuiviBailRow } from "@/components/immobilier/fin-bail";
 import { authedFetch } from "@/lib/auth";
 import {
+  GarantsContactsSection,
+  TalDossiersSection
+} from "@/components/immobilier/tal-garants";
+import {
   AuMoisToggle,
   ResilierBailButton,
   BailDocActions,
@@ -1247,6 +1251,24 @@ export default function LocataireDetailPage({
                 }`
               }))}
             />
+
+            {/* Dossier TAL — suivi simple des recours (retour Phil
+                2026-09-09, point 5) : statut, motif, numéro, dates,
+                notes et pièces rattachées. */}
+            <TalDossiersSection
+              locataireId={locataireId}
+              baux={(dossier?.baux || []).map((b) => ({
+                id: b.id,
+                status: b.status,
+                label: `${b.immeuble_name}${
+                  b.logement_numero ? ` · ${b.logement_numero}` : ""
+                } (${b.date_debut} → ${b.date_fin})`
+              }))}
+            />
+
+            {/* Garants & contacts — sans fiche complète, cherchables
+                (retour Phil 2026-09-09, point 8). */}
+            <GarantsContactsSection locataireId={locataireId} />
 
             {/* Communications — journal manuel */}
             <section className="rounded-2xl border border-brand-800 bg-brand-900 p-5">

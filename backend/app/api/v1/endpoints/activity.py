@@ -47,6 +47,7 @@ from app.models.devlog_project import DevlogProject
 from app.models.employe import Employe
 from app.models.entreprise import Entreprise, EntreprisePartner
 from app.models.entreprise_tache import EntrepriseTache
+from app.models.immobilier import ImmLocataireContact, ImmTalDossier
 from app.models.project import Project
 from app.models.project_task import ProjectTask
 from app.models.prospection_deal import ProspectionDeal
@@ -1585,6 +1586,17 @@ _DETAIL_ENTITIES: dict[str, tuple] = {
         ProjectTask, "construction", "project_task",
         "construction:tasks:read",
     ),
+    # Immobilier (2026-09-09) : dossiers TAL + garants/contacts. Pas de
+    # capacité dédiée dans le catalogue → lisibles via
+    # ``immobilier:activity:read`` (clé sans scopes = tous les pôles).
+    "tal_dossier": (
+        ImmTalDossier, "immobilier", "imm_tal_dossier",
+        "immobilier:tal_dossiers:read",
+    ),
+    "locataire_contact": (
+        ImmLocataireContact, "immobilier", "imm_locataire_contact",
+        "immobilier:locataire_contacts:read",
+    ),
 }
 
 
@@ -1868,6 +1880,21 @@ _LIST_ENTITIES: dict[str, _ListSpec] = {
         entity_type="project", list_cap="construction:projects:list",
         order_attr="updated_at", stage_attr="status", supports_active=False,
     ),
+    # Immobilier (2026-09-09) — `stage` filtre le statut du dossier TAL
+    # (a_ouvrir | ouvert | audience | decision | ferme) ou le rôle du
+    # contact (garant | colocataire | occupant | urgence).
+    "tal_dossiers": _ListSpec(
+        model=ImmTalDossier, pole="immobilier",
+        entity_type="imm_tal_dossier",
+        list_cap="immobilier:tal_dossiers:list",
+        order_attr="updated_at", stage_attr="statut", supports_active=False,
+    ),
+    "locataire_contacts": _ListSpec(
+        model=ImmLocataireContact, pole="immobilier",
+        entity_type="imm_locataire_contact",
+        list_cap="immobilier:locataire_contacts:list",
+        order_attr="updated_at", stage_attr="role", supports_active=False,
+    ),
 }
 
 #: Alias supplémentaires (noms « complets ») vers les mêmes specs, pour que
@@ -1882,6 +1909,11 @@ _LIST_ALIASES: dict[str, str] = {
     "entreprise": "entreprises",
     "project": "projects",
     "construction_projects": "projects",
+    "tal_dossier": "tal_dossiers",
+    "imm_tal_dossier": "tal_dossiers",
+    "locataire_contact": "locataire_contacts",
+    "imm_locataire_contact": "locataire_contacts",
+    "garants": "locataire_contacts",
 }
 
 
@@ -2005,8 +2037,9 @@ async def list_entities_endpoint(
         ...,
         description=(
             "Type de liste : deals, analyses, soumissions, devlog_projects, "
-            "entreprises, projects (alias acceptés : prospection_deal, "
-            "lead_analysis, devlog_project, project…)."
+            "entreprises, projects, tal_dossiers, locataire_contacts "
+            "(alias acceptés : prospection_deal, lead_analysis, "
+            "devlog_project, project, garants…)."
         ),
     ),
     stage: Optional[str] = Query(
