@@ -15,6 +15,14 @@ import {
 import { Link, useRouter } from "@/i18n/navigation";
 import { authedFetch } from "@/lib/auth";
 import { BoutonExport } from "@/components/immobilier/bouton-export";
+import type { FichierAImporter } from "@/components/immobilier/doc-types";
+import {
+  DocumentsAImporterZone,
+  importerEnSerie,
+  texteProgression,
+  type ImportResultat
+} from "@/components/immobilier/documents-a-importer";
+import { importDocument } from "@/components/immobilier/tal-avis";
 import { ImmobilierTopbar, useImmobilierLayout } from "../layout";
 
 type Locataire = {
@@ -421,6 +429,101 @@ function CreateLocataireModal({
   // homonymes, couple qui partage un courriel de ménage).
   const [doublons, setDoublons] = useState<LocataireDoublon[] | null>(null);
   const [verifDoublons, setVerifDoublons] = useState(false);
+  // Documents déposés EN MÊME TEMPS que la fiche (retour Phil
+  // 2026-09-09) : bail, règlements de l'immeuble, assurance… Chaque
+  // fichier passe par /documents/import rattaché au LOCATAIRE — un
+  // « Bail » reste une pièce du dossier tant qu'aucun bail n'existe ; il
+  // se joint au bail plus tard (« Joindre le bail signé ») ou viendra
+  // de la signature en ligne.
+  const [fichiers, setFichiers] = useState<FichierAImporter[]>([]);
+  const [progression, setProgression] = useState<{
+    fait: number;
+    total: number;
+  } | null>(null);
+  const [resultatsImport, setResultatsImport] = useState<
+    ImportResultat[] | null
+  >(null);
+  // Fiche déjà créée (ou existante retenue) dont des documents ont
+  // échoué : plus question de recréer — on réessaie ou on ouvre la fiche.
+  const [ficheEnAttente, setFicheEnAttente] = useState<number | null>(null);
+  const enCoursImport =
+    progression != null && progression.fait < progression.total;
+
+  /** Dépose `liste` sur la fiche puis sort (onSaved). Une erreur sur un
+   *  fichier ne bloque ni les autres ni la fiche : elle s'affiche par
+   *  ligne, et « Ouvrir la fiche » reste possible. */
+  async function deposerPuisSortir(
+    locataireId: number,
+    liste: FichierAImporter[]
+  ) {
+    if (liste.length === 0) {
+      onSaved(locataireId);
+      return;
+    }
+    const res = await importerEnSerie(
+      liste,
+      (f) => importDocument({ file: f.file, type: f.type, locataireId }),
+      (fait, total) => setProgression({ fait, total })
+    );
+    // On garde les « Déposé » des passes précédentes (réessai partiel).
+    setResultatsImport((prev) => [
+      ...(prev || []).filter(
+        (x) => !res.some((r) => r.fichier.key === x.fichier.key)
+      ),
+      ...res
+    ]);
+    const echecs = res.filter((r) => r.erreur).length;
+    if (echecs === 0) {
+      onSaved(locataireId);
+      return;
+    }
+    setFicheEnAttente(locataireId);
+    setErr(
+      `La fiche est créée, mais ${echecs} document${echecs > 1 ? "s" : ""} ` +
+        "n'ont pas pu être déposés — réessaie, ou ouvre la fiche et " +
+        "importe-les depuis sa section Documents."
+    );
+  }
+
+  async function reessayerEchecs() {
+    if (ficheEnAttente == null) return;
+    const rates = new Set(
+      (resultatsImport || []).filter((r) => r.erreur).map((r) => r.fichier.key)
+    );
+    // Les échecs + les fichiers ajoutés depuis (jamais tentés).
+    const liste = fichiers.filter(
+      (f) =>
+        rates.has(f.key) ||
+        !(resultatsImport || []).some((r) => r.fichier.key === f.key)
+    );
+    if (liste.length === 0) {
+      onSaved(ficheEnAttente);
+      return;
+    }
+    setSaving(true);
+    setErr(null);
+    try {
+      await deposerPuisSortir(ficheEnAttente, liste);
+    } catch (e2) {
+      setErr((e2 as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  /** Fiche existante retenue dans l'alerte doublon : les documents
+   *  choisis vont sur ELLE (même personne). */
+  async function choisirExistante(locataireId: number) {
+    setSaving(true);
+    setErr(null);
+    try {
+      await deposerPuisSortir(locataireId, fichiers);
+    } catch (e2) {
+      setErr((e2 as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
 
   async function creer() {
     setSaving(true);
@@ -446,7 +549,7 @@ function CreateLocataireModal({
         throw new Error(t.slice(0, 240) || `HTTP ${res.status}`);
       }
       const created = (await res.json()) as { id: number };
-      onSaved(created.id);
+      await deposerPuisSortir(created.id, fichiers);
     } catch (e2) {
       setErr((e2 as Error).message);
     } finally {
@@ -604,6 +707,15 @@ function CreateLocataireModal({
             />
           </div>
 
+          <DocumentsAImporterZone
+            fichiers={fichiers}
+            onChange={setFichiers}
+            disabled={saving}
+            progression={progression}
+            resultats={resultatsImport}
+            aide="Bail, règlements de l'immeuble, assurance… déposés d'un coup sur la fiche. Le « Bail » reste une pièce du dossier tant qu'aucun bail n'existe : il se joint au bail plus tard (« Joindre le bail signé »), ou viendra de la signature en ligne."
+          />
+
           {err ? (
             <p className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
               <AlertTriangle className="mr-1.5 inline h-3.5 w-3.5" />
@@ -659,9 +771,14 @@ function CreateLocataireModal({
                       <div className="flex flex-shrink-0 items-center gap-1.5">
                         <button
                           type="button"
-                          onClick={() => onSaved(d.id)}
-                          className="btn-accent btn-xs inline-flex items-center gap-1"
-                          title="Utiliser cette fiche au lieu d'en créer une nouvelle"
+                          onClick={() => void choisirExistante(d.id)}
+                          disabled={saving}
+                          className="btn-accent btn-xs inline-flex items-center gap-1 disabled:opacity-60"
+                          title={
+                            fichiers.length > 0
+                              ? "Utiliser cette fiche (les documents choisis y seront déposés)"
+                              : "Utiliser cette fiche au lieu d'en créer une nouvelle"
+                          }
                         >
                           <UserCheck className="h-3 w-3" />
                           Sélectionner
@@ -685,10 +802,40 @@ function CreateLocataireModal({
           ) : null}
 
           <div className="flex items-center justify-end gap-2 border-t border-brand-800 pt-4">
-            <button type="button" onClick={onClose} className="btn-secondary text-sm">
-              Annuler
-            </button>
-            {doublons && doublons.length > 0 ? (
+            {ficheEnAttente != null ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => onSaved(ficheEnAttente)}
+                  disabled={saving}
+                  className="btn-secondary text-sm disabled:opacity-60"
+                  title="La fiche existe : ouvre-la, les documents en échec pourront être importés depuis sa section Documents"
+                >
+                  Ouvrir la fiche
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void reessayerEchecs()}
+                  disabled={saving}
+                  className="btn-accent inline-flex items-center text-sm disabled:opacity-60"
+                >
+                  {saving ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Import {texteProgression(progression)}…
+                    </>
+                  ) : (
+                    "Réessayer les échecs"
+                  )}
+                </button>
+              </>
+            ) : null}
+            {ficheEnAttente != null ? null : (
+              <button type="button" onClick={onClose} className="btn-secondary text-sm">
+                Annuler
+              </button>
+            )}
+            {ficheEnAttente != null ? null : doublons && doublons.length > 0 ? (
               // Le staff garde le dernier mot : l'alerte informe, elle
               // n'interdit rien.
               <button
@@ -700,7 +847,9 @@ function CreateLocataireModal({
                 {saving ? (
                   <>
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Création…
+                    {enCoursImport
+                      ? `Import ${texteProgression(progression)}…`
+                      : "Création…"}
                   </>
                 ) : (
                   "Créer quand même"
@@ -715,8 +864,14 @@ function CreateLocataireModal({
                 {saving || verifDoublons ? (
                   <>
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    {verifDoublons ? "Vérification…" : "Création…"}
+                    {verifDoublons
+                      ? "Vérification…"
+                      : enCoursImport
+                        ? `Import ${texteProgression(progression)}…`
+                        : "Création…"}
                   </>
+                ) : fichiers.length > 0 ? (
+                  `Créer + ${fichiers.length} document${fichiers.length > 1 ? "s" : ""}`
                 ) : (
                   "Créer"
                 )}

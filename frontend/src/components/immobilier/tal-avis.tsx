@@ -21,6 +21,7 @@ import {
   Loader2,
   Mail,
   Pencil,
+  Plus,
   Trash2,
   Upload,
   X
@@ -29,7 +30,23 @@ import {
 import { Link } from "@/i18n/navigation";
 import { authedFetch } from "@/lib/auth";
 import { BoutonExportZip } from "@/components/immobilier/bouton-export";
+import {
+  docTypeLabel,
+  estDocTypeNormalise,
+  versFichiersAImporter,
+  type FichierAImporter
+} from "@/components/immobilier/doc-types";
+import {
+  FichiersAImporterListe,
+  importerEnSerie,
+  texteProgression,
+  type ImportResultat
+} from "@/components/immobilier/documents-a-importer";
 import { FinBailModal } from "@/components/immobilier/fin-bail";
+
+// Types normalisés (miroir du backend) — ré-exportés ici pour les pages
+// qui importent déjà tout de tal-avis.
+export { IMM_DOC_TYPES, docTypeLabel } from "@/components/immobilier/doc-types";
 
 export type BailDocument = {
   id: number;
@@ -85,47 +102,277 @@ export async function importDocument(opts: {
   return d as BailDocument;
 }
 
-/** Bouton « Importer » réutilisable (input fichier caché). */
+/**
+ * Téléverse LE bail signé d'un bail (POST /baux/{id}/document) : pose
+ * `bail.document_id`, active un bail « proposé », referme le dossier de
+ * relocation et recale le logement. ⚠️ Jamais `/documents/import` pour
+ * ce cas — là, un « bail » n'est qu'une pièce au dossier.
+ */
+export async function uploadBailDocument(opts: {
+  bailId: number;
+  file: File;
+  /** AAAA-MM-JJ — entrée en vigueur (titre « Bail signé … »). */
+  dateEntree?: string;
+  /** true = marque le bail « au mois » (chambres). */
+  auMois?: boolean;
+}): Promise<BailDocument> {
+  const fd = new FormData();
+  fd.append("file", opts.file);
+  if (opts.dateEntree) fd.append("date_entree", opts.dateEntree);
+  // Coché seulement : on n'écrase pas un réglage existant quand la case
+  // reste vide.
+  if (opts.auMois) fd.append("au_mois", "true");
+  const r = await authedFetch(
+    `/api/v1/immobilier/baux/${opts.bailId}/document`,
+    { method: "POST", body: fd }
+  );
+  const d = await r.json().catch(() => null);
+  if (!r.ok) {
+    throw new Error((d && (d.detail || d.message)) || `Erreur ${r.status}`);
+  }
+  return d as BailDocument;
+}
+
+/**
+ * Bouton « Importer » réutilisable (input fichier caché).
+ *
+ * Mono-fichier par défaut (`onPick`) — compatible avec tous les usages
+ * existants. Avec `multiple`, plusieurs fichiers d'un coup : un
+ * mini-panneau liste les fichiers avec leur type (dès qu'il y en a plus
+ * d'un, ou toujours avec `avecType`) puis `onImport` est appelé fichier
+ * par fichier — progression « 2/4 », erreurs par fichier sans bloquer
+ * les autres (retour Phil 2026-09-09).
+ */
 export function ImportDocButton({
   label,
   onPick,
   busy,
-  title
+  title,
+  multiple = false,
+  avecType = false,
+  onImport,
+  onDone
 }: {
   label: string;
-  onPick: (file: File) => void;
+  /** Un seul fichier (usage historique). Sans `onImport`, c'est aussi
+   *  le repli fichier par fichier quand `multiple` est actif. */
+  onPick?: (file: File) => void;
   busy?: boolean;
   /** Infobulle : à quoi sert vraiment cet import. */
   title?: string;
+  /** Plusieurs fichiers à la fois (panneau types + progression). */
+  multiple?: boolean;
+  /** Toujours demander le type, même pour un seul fichier. */
+  avecType?: boolean;
+  /** Import d'UN fichier avec son type — appelé en série. */
+  onImport?: (file: File, type: string) => Promise<unknown>;
+  /** Après la série, dès qu'au moins un import a réussi. */
+  onDone?: () => void;
 }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const [fichiers, setFichiers] = useState<FichierAImporter[]>([]);
+  const [panneau, setPanneau] = useState(false);
+  const [progression, setProgression] = useState<{
+    fait: number;
+    total: number;
+  } | null>(null);
+  const [resultats, setResultats] = useState<ImportResultat[] | null>(null);
+  const enCours =
+    progression != null && progression.fait < progression.total;
+  const echecs = (resultats || []).filter((r) => r.erreur);
+
+  function fermer() {
+    if (enCours) return;
+    setPanneau(false);
+    setFichiers([]);
+    setResultats(null);
+    setProgression(null);
+  }
+
+  async function lancer(liste: FichierAImporter[]) {
+    if (liste.length === 0 || !onImport) return;
+    setFichiers(liste);
+    setResultats(null);
+    const res = await importerEnSerie(
+      liste,
+      (f) => onImport(f.file, f.type),
+      (fait, total) => setProgression({ fait, total })
+    );
+    setResultats(res);
+    const ok = res.filter((r) => !r.erreur).length;
+    if (ok > 0) onDone?.();
+    if (ok === res.length) {
+      // Tout est passé : rien à montrer, on referme.
+      setPanneau(false);
+      setFichiers([]);
+      setResultats(null);
+      setProgression(null);
+    }
+  }
+
+  function choisir(list: FileList | null) {
+    const files = list ? Array.from(list) : [];
+    if (files.length === 0) return;
+    // Dans les sections Documents on ne présume pas « bail » : c'est
+    // une pièce au dossier, le gestionnaire choisit le type.
+    const entrees = versFichiersAImporter(files).map((f) => ({
+      ...f,
+      type: "autre"
+    }));
+    if (panneau) {
+      // « Ajouter d'autres fichiers » depuis le panneau ouvert.
+      setFichiers((prev) => [...prev, ...entrees]);
+      return;
+    }
+    if (files.length === 1 && !avecType) {
+      // Usage historique : un fichier, pas de type à choisir.
+      if (onPick) {
+        onPick(files[0]);
+        return;
+      }
+      if (onImport) {
+        void lancer(entrees);
+        return;
+      }
+    }
+    if (!onImport) {
+      // Pas de boucle typée fournie : chaque fichier passe par onPick.
+      if (onPick) files.forEach((f) => onPick(f));
+      return;
+    }
+    setFichiers(entrees);
+    setResultats(null);
+    setProgression(null);
+    setPanneau(true);
+  }
+
+  const occupe = Boolean(busy) || enCours;
   return (
     <>
       <input
         ref={inputRef}
         type="file"
+        multiple={multiple}
         accept="application/pdf,image/jpeg,image/png"
         className="hidden"
         onChange={(e) => {
-          const f = e.target.files?.[0];
-          if (f) onPick(f);
+          choisir(e.target.files);
           e.target.value = "";
         }}
       />
       <button
         type="button"
         className="btn-secondary btn-xs"
-        disabled={busy}
+        disabled={occupe}
         title={title}
         onClick={() => inputRef.current?.click()}
       >
-        {busy ? (
+        {occupe ? (
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
         ) : (
           <Upload className="h-3.5 w-3.5" />
         )}
         {label}
+        {enCours ? (
+          <span className="ml-1 text-[10px] text-white/60">
+            {texteProgression(progression)}
+          </span>
+        ) : null}
       </button>
+      {panneau ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onClick={fermer}
+        >
+          <div
+            className="max-h-[85vh] w-full max-w-md overflow-y-auto rounded-2xl border border-brand-800 bg-brand-900 p-4 shadow-card"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-3 flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-bold text-white">
+                  Importer {fichiers.length} document
+                  {fichiers.length > 1 ? "s" : ""}
+                </h3>
+                <p className="mt-0.5 text-[11px] text-white/50">
+                  Choisis le type de chaque pièce. Un « Bail » déposé ici
+                  est une pièce au dossier — pour LE bail signé qui active
+                  le bail, utilise « Joindre le bail signé ».
+                </p>
+              </div>
+              <button
+                type="button"
+                className="rounded-lg p-1.5 text-white/40 hover:text-white disabled:opacity-40"
+                onClick={fermer}
+                disabled={enCours}
+                title="Fermer"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <FichiersAImporterListe
+              fichiers={fichiers}
+              onChange={setFichiers}
+              disabled={enCours}
+              resultats={resultats}
+            />
+            {fichiers.length === 0 ? (
+              <p className="rounded-lg border border-dashed border-brand-700 px-3 py-2 text-xs text-white/40">
+                Aucun fichier.
+              </p>
+            ) : null}
+            <button
+              type="button"
+              className="mt-2 inline-flex items-center gap-1 text-xs text-accent-500 hover:underline disabled:opacity-40"
+              disabled={enCours}
+              onClick={() => inputRef.current?.click()}
+            >
+              <Plus className="h-3 w-3" /> Ajouter d&apos;autres fichiers
+            </button>
+            <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
+              {enCours ? (
+                <span className="mr-auto inline-flex items-center gap-1 text-xs text-white/60">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  Import {texteProgression(progression)}
+                </span>
+              ) : echecs.length > 0 ? (
+                <span className="mr-auto text-xs text-rose-300">
+                  {echecs.length} fichier{echecs.length > 1 ? "s" : ""} en
+                  échec — les autres sont déposés.
+                </span>
+              ) : null}
+              <button
+                type="button"
+                className="btn-secondary btn-sm"
+                onClick={fermer}
+                disabled={enCours}
+              >
+                {resultats ? "Fermer" : "Annuler"}
+              </button>
+              {echecs.length > 0 ? (
+                <button
+                  type="button"
+                  className="btn-accent btn-sm"
+                  disabled={enCours}
+                  onClick={() => void lancer(echecs.map((r) => r.fichier))}
+                >
+                  Réessayer les échecs
+                </button>
+              ) : !resultats ? (
+                <button
+                  type="button"
+                  className="btn-accent btn-sm"
+                  disabled={enCours || fichiers.length === 0}
+                  onClick={() => void lancer(fichiers)}
+                >
+                  <Upload className="h-3.5 w-3.5" />
+                  Importer {fichiers.length > 1 ? fichiers.length : ""}
+                </button>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </>
   );
 }
@@ -1201,6 +1448,9 @@ export function DocsList({
                         </span>
                       ) : d.source === "importe" ? (
                         <span className="text-white/40">
+                          {d.type !== "autre" && estDocTypeNormalise(d.type)
+                            ? `${docTypeLabel(d.type)} · `
+                            : ""}
                           {d.filename || "Fichier déposé au dossier"}
                         </span>
                       ) : (
@@ -1299,7 +1549,6 @@ export function DocumentsSection({
 }) {
   const [docs, setDocs] = useState<BailDocument[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [importing, setImporting] = useState(false);
 
   const load = useCallback(async () => {
     // categorie=dossier : uniquement les pièces SIGNÉES ou IMPORTÉES —
@@ -1318,24 +1567,12 @@ export function DocumentsSection({
     }
   }, [locataireId, logementId]);
 
-  const doImport = useCallback(
-    async (file: File) => {
-      setImporting(true);
-      setErr(null);
-      try {
-        await importDocument({
-          file,
-          locataireId,
-          logementId
-        });
-        await load();
-      } catch (e) {
-        setErr(`Import : ${(e as Error).message}`);
-      } finally {
-        setImporting(false);
-      }
-    },
-    [locataireId, logementId, load]
+  // Plusieurs pièces d'un coup, un type par fichier (retour Phil
+  // 2026-09-09) — chaque fichier passe par /documents/import.
+  const importerUn = useCallback(
+    (file: File, type: string) =>
+      importDocument({ file, type, locataireId, logementId }),
+    [locataireId, logementId]
   );
 
   useEffect(() => {
@@ -1358,8 +1595,11 @@ export function DocumentsSection({
         <span className="ml-auto flex flex-wrap items-center gap-2">
           <ImportDocButton
             label="Importer"
-            busy={importing}
-            onPick={(f) => void doImport(f)}
+            multiple
+            avecType
+            onImport={importerUn}
+            onDone={() => void load()}
+            title="Déposer une ou plusieurs pièces au dossier (un type par fichier)"
           />
           {/* Zip de ce qui est listé ici (pièces du DOSSIER : signées ou
               importées) + index.csv. */}
@@ -1679,23 +1919,15 @@ export function BailDocActions({
     setBusy(true);
     setErr(null);
     try {
-      const fd = new FormData();
-      fd.append("file", file);
-      if (date) fd.append("date_entree", date);
       // « Au mois » demandé au même moment que la date (retour Phil
       // 2026-07-28) — coché seulement, on n'écrase pas un réglage
       // existant quand la case reste vide.
-      if (auMois) fd.append("au_mois", "true");
-      const r = await authedFetch(
-        `/api/v1/immobilier/baux/${bailId}/document`,
-        { method: "POST", body: fd }
-      );
-      const d = await r.json().catch(() => null);
-      if (!r.ok) {
-        throw new Error(
-          (d && (d.detail || d.message)) || `HTTP ${r.status}`
-        );
-      }
+      await uploadBailDocument({
+        bailId,
+        file,
+        dateEntree: date || undefined,
+        auMois
+      });
       notifyDocumentsChanged(bailId);
       onChanged?.();
       // C'est ICI que Phil voulait le consentement : « faudrait que ce
