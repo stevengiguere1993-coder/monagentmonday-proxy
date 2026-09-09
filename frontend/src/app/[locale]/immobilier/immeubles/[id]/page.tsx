@@ -48,6 +48,7 @@ import {
   LogementFiche
 } from "@/components/immobilier/logement-fiche";
 import { LocationsBoard } from "@/components/immobilier/locations-board";
+import { TransfertUniteButton } from "@/components/immobilier/transfert-unite";
 import { BailDocActions } from "@/components/immobilier/tal-avis";
 import { BoutonExport } from "@/components/immobilier/bouton-export";
 import {
@@ -2710,13 +2711,29 @@ function BauxTab({
                                 Annuler le départ
                               </button>
                             ) : (
-                              <button
-                                type="button"
-                                onClick={() => setFinBailFor(r)}
-                                className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/40 bg-rose-500/10 px-2.5 py-1 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/20"
-                              >
-                                Mettre fin au bail
-                              </button>
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => setFinBailFor(r)}
+                                  className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/40 bg-rose-500/10 px-2.5 py-1 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/20"
+                                >
+                                  Mettre fin au bail
+                                </button>
+                                {/* Transfert d'unité — miroir de la page Baux. */}
+                                <TransfertUniteButton
+                                  bailId={r.bail_id}
+                                  locataireNom={r.locataire_nom}
+                                  immeubleId={r.immeuble_id}
+                                  immeubleName={r.immeuble_name}
+                                  logementNumero={r.logement_numero}
+                                  loyerActuel={r.loyer_mensuel}
+                                  finActuelle={r.date_fin}
+                                  onDone={(msg) => {
+                                    setFlash(msg);
+                                    void load();
+                                  }}
+                                />
+                              </>
                             )}
                             <BailDocActions
                               bailId={r.bail_id}

@@ -156,6 +156,7 @@ async def ensure_critical_columns() -> None:
         # (import manuel 2026-08-19).
         ("imm_baux", "depot_recu_le", "DATE"),
         ("imm_baux", "depot_detenteur", "VARCHAR(120)"),
+        ("imm_baux", "depot_transfere_vers_bail_id", "INTEGER"),
         ("imm_baux", "sans_document_motif", "VARCHAR(255)"),
         ("imm_baux", "sans_document_par", "VARCHAR(255)"),
         ("imm_baux", "sans_document_le", "TIMESTAMP WITH TIME ZONE"),

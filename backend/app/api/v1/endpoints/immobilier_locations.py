@@ -164,7 +164,14 @@ async def _to_row(db, d: LocationDossier) -> DossierRow:
         if bail:
             loc = await db.get(Locataire, bail.locataire_id)
             locataire_sortant = loc.full_name if loc else None
-            if bail.depot_garantie is not None and float(bail.depot_garantie) > 0:
+            # Transfert d'unité : le dépôt a suivi le locataire — rien
+            # à rendre sur ce dossier-ci.
+            if (
+                bail.depot_garantie is not None
+                and float(bail.depot_garantie) > 0
+                and getattr(bail, "depot_transfere_vers_bail_id", None)
+                is None
+            ):
                 depot_sortant = float(bail.depot_garantie)
                 depot_sortant_rendu_le = bail.depot_rendu_le
     nouveau_locataire_id = None

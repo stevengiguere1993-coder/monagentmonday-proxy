@@ -675,6 +675,13 @@ class Bail(Base, TimestampUpdateMixin):
     # Date de REMISE du dépôt au locataire (bail terminé → dépôt rendu).
     # NULL = toujours détenu (ou à rendre si le bail est terminé/résilié).
     depot_rendu_le: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    #: TRANSFERT D'UNITÉ (retour Phil 2026-09-09) : le dépôt de ce bail a
+    #: SUIVI le locataire sur son nouveau bail — il n'est ni « à rendre »
+    #: ni « rendu », il dort maintenant sur l'autre bail. Colonne
+    #: additive → ensure_critical_columns.
+    depot_transfere_vers_bail_id: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
 
     #: Bail AU MOIS (chambres, retour Phil 2026-07-28) : reconduction
     #: automatique au même prix — jamais dans le suivi des renouvellements
