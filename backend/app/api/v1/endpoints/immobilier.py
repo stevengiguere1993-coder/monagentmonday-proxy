@@ -1071,6 +1071,7 @@ async def delete_immeuble(
                     Bail.depot_garantie.is_not(None),
                     Bail.depot_garantie > 0,
                     Bail.depot_rendu_le.is_(None),
+                    Bail.depot_transfere_vers_bail_id.is_(None),
                 )
             )
         ).scalar_one()
@@ -3537,12 +3538,18 @@ class DepotRow(BaseModel):
     locataire_name: Optional[str] = None
     montant: float
     # "detenu" | "a_rendre" | "rendu" | "aucun" (bail actif sans dépôt
-    # saisi — permet de le saisir directement depuis la page Dépôts).
+    # saisi — permet de le saisir directement depuis la page Dépôts)
+    # | "transfere" (transfert d'unité : le dépôt a suivi le locataire
+    # sur son nouveau bail — rien à rendre, rien de rendu).
     statut: str
     #: Quand le dépôt a été reçu, et chez qui l'argent dort.
     depot_recu_le: Optional[date] = None
     depot_detenteur: Optional[str] = None
     depot_rendu_le: Optional[date] = None
+    #: Transfert d'unité : numéro du logement vers lequel le dépôt est
+    #: parti (ancien bail) / d'où il vient (nouveau bail).
+    transfere_vers_logement: Optional[str] = None
+    transfere_depuis_logement: Optional[str] = None
     date_debut: date
     date_fin: date
 
@@ -3659,6 +3666,23 @@ async def depots_overview(
     for b in baux:
         if b.status == BailStatus.ACTIF.value:
             actifs_par_logement.setdefault(b.logement_id, []).append(b)
+    # Transferts d'unité : ancien bail → nouveau bail (le dépôt a suivi).
+    baux_par_id = {b.id: b for b in baux}
+    depuis_par_bail: Dict[int, Bail] = {}
+    for b in baux:
+        cible = getattr(b, "depot_transfere_vers_bail_id", None)
+        if cible:
+            depuis_par_bail[cible] = b
+
+    async def _numero_logement_du_bail(bail_id: int) -> Optional[str]:
+        nb = baux_par_id.get(bail_id) or await db.get(Bail, bail_id)
+        if nb is None:
+            return None
+        lg_nb = log_by_id.get(nb.logement_id) or await db.get(
+            Logement, nb.logement_id
+        )
+        return lg_nb.numero if lg_nb else None
+
     rows: List[DepotRow] = []
     total_detenu = 0.0
     total_a_rendre = 0.0
@@ -3669,6 +3693,15 @@ async def depots_overview(
         if im is None:
             continue
         montant = float(b.depot_garantie or 0)
+        transfere_vers = None
+        transfere_depuis = None
+        if b.id in depuis_par_bail:
+            transfere_depuis = log_by_id.get(
+                depuis_par_bail[b.id].logement_id
+            )
+            transfere_depuis = (
+                transfere_depuis.numero if transfere_depuis else None
+            )
         if montant <= 0:
             # Bail sans dépôt : on n'affiche que les ACTIFS, comme ligne
             # « à saisir » — les baux passés sans dépôt n'apportent rien.
@@ -3678,6 +3711,13 @@ async def depots_overview(
         elif b.depot_rendu_le is not None:
             statut = "rendu"
             total_rendu += montant
+        elif getattr(b, "depot_transfere_vers_bail_id", None):
+            # Transfert d'unité : l'argent dort sur le NOUVEAU bail (qui
+            # a sa propre ligne « détenu ») — ici, rien à rendre.
+            statut = "transfere"
+            transfere_vers = await _numero_logement_du_bail(
+                b.depot_transfere_vers_bail_id
+            )
         elif b.status in a_rendre_status and (
             any(
                 nb.id != b.id and nb.locataire_id != b.locataire_id
@@ -3717,11 +3757,13 @@ async def depots_overview(
             depot_recu_le=b.depot_recu_le,
             depot_detenteur=b.depot_detenteur,
             depot_rendu_le=b.depot_rendu_le,
+            transfere_vers_logement=transfere_vers,
+            transfere_depuis_logement=transfere_depuis,
             date_debut=b.date_debut,
             date_fin=b.date_fin,
         ))
 
-    rank = {"a_rendre": 0, "detenu": 1, "aucun": 2, "rendu": 3}
+    rank = {"a_rendre": 0, "detenu": 1, "aucun": 2, "transfere": 3, "rendu": 4}
 
     def _cle_tri(r: DepotRow):
         # Les rendus vont tout en bas, du plus récemment rendu au plus
@@ -4112,6 +4154,7 @@ async def delete_bail(
         obj.depot_garantie is not None
         and float(obj.depot_garantie) > 0
         and obj.depot_rendu_le is None
+        and getattr(obj, "depot_transfere_vers_bail_id", None) is None
     ):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

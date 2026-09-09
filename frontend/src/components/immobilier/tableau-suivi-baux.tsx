@@ -23,6 +23,7 @@ import { useState } from "react";
 import { FileDown, Plus, Trash2 } from "lucide-react";
 
 import { Link } from "@/i18n/navigation";
+import { TransfertUniteButton } from "@/components/immobilier/transfert-unite";
 import { authedFetch } from "@/lib/auth";
 import {
   AnnulerDepartModal,
@@ -293,13 +294,32 @@ export function TableauSuiviBaux({
                                     Annuler le départ
                                   </button>
                                 ) : (
-                                  <button
-                                    type="button"
-                                    onClick={() => setFinBailFor(r)}
-                                    className="inline-flex items-center rounded-lg border border-rose-500/40 bg-rose-500/10 px-2 py-0.5 text-[11px] font-semibold text-rose-300 transition hover:bg-rose-500/20"
-                                  >
-                                    Mettre fin au bail
-                                  </button>
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => setFinBailFor(r)}
+                                      className="inline-flex items-center rounded-lg border border-rose-500/40 bg-rose-500/10 px-2 py-0.5 text-[11px] font-semibold text-rose-300 transition hover:bg-rose-500/20"
+                                    >
+                                      Mettre fin au bail
+                                    </button>
+                                    {/* Transfert d'unité (2026-09-09) :
+                                        même geste partout où un bail
+                                        actif s'affiche. */}
+                                    <TransfertUniteButton
+                                      bailId={r.bail_id}
+                                      locataireNom={r.locataire_nom}
+                                      immeubleId={r.immeuble_id}
+                                      immeubleName={r.immeuble_name}
+                                      logementNumero={r.logement_numero}
+                                      loyerActuel={r.loyer_mensuel}
+                                      finActuelle={r.date_fin}
+                                      compact
+                                      onDone={(msg) => {
+                                        setFlash(msg);
+                                        void load();
+                                      }}
+                                    />
+                                  </>
                                 )}
                               </>
                             }

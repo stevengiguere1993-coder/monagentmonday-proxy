@@ -326,6 +326,8 @@ class BailRead(BailBase):
     model_config = ConfigDict(from_attributes=True)
     id: int
     depot_rendu_le: Optional[date] = None
+    #: Transfert d'unité : le dépôt a suivi le locataire sur ce bail-là.
+    depot_transfere_vers_bail_id: Optional[int] = None
     #: Dossier TAL ouvert (non-paiement).
     tal_dossier_ouvert_le: Optional[date] = None
     created_at: datetime

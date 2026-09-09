@@ -32,10 +32,13 @@ type DepotRow = {
   locataire_id: number | null;
   locataire_name: string | null;
   montant: number;
-  statut: string; // "detenu" | "a_rendre" | "rendu" | "aucun"
+  statut: string; // "detenu" | "a_rendre" | "rendu" | "aucun" | "transfere"
   depot_recu_le: string | null;
   depot_detenteur: string | null;
   depot_rendu_le: string | null;
+  //: Transfert d'unité : le dépôt est parti vers / venu d'un autre logement.
+  transfere_vers_logement?: string | null;
+  transfere_depuis_logement?: string | null;
   date_debut: string;
   date_fin: string;
 };
@@ -112,7 +115,7 @@ export default function DepotsPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [statutFilter, setStatutFilter] = useState<
-    "all" | "detenu" | "a_rendre" | "aucun" | "rendu"
+    "all" | "detenu" | "a_rendre" | "aucun" | "rendu" | "transfere"
   >("all");
   const [immeubleFilter, setImmeubleFilter] = useState<number | "all">("all");
   const [actionErr, setActionErr] = useState<string | null>(null);
@@ -307,6 +310,11 @@ export default function DepotsPage() {
             onClick={() => setStatutFilter("aucun")}
           />
           <FilterPill
+            label="Transférés"
+            active={statutFilter === "transfere"}
+            onClick={() => setStatutFilter("transfere")}
+          />
+          <FilterPill
             label="Rendus"
             active={statutFilter === "rendu"}
             onClick={() => setStatutFilter("rendu")}
@@ -447,8 +455,28 @@ export default function DepotsPage() {
                         <span className="badge border border-white/10 text-white/50">
                           À saisir
                         </span>
+                      ) : r.statut === "transfere" ? (
+                        <span
+                          className="badge badge-sky"
+                          title="Transfert d'unité : le dépôt a suivi le locataire sur son nouveau bail — rien à rendre"
+                        >
+                          Transféré
+                          {r.transfere_vers_logement
+                            ? ` → Log. ${r.transfere_vers_logement}`
+                            : ""}
+                        </span>
                       ) : (
-                        <span className="badge badge-violet">Détenu</span>
+                        <span className="badge badge-violet">
+                          Détenu
+                          {r.transfere_depuis_logement ? (
+                            <span
+                              className="ml-1 font-normal opacity-70"
+                              title="Reçu par transfert d'unité"
+                            >
+                              (du log. {r.transfere_depuis_logement})
+                            </span>
+                          ) : null}
+                        </span>
                       )}
                     </td>
                     <td className="px-3 py-2.5 text-right">
