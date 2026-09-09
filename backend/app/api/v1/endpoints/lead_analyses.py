@@ -184,6 +184,10 @@ class LeadAnalysisRead(BaseModel):
     # [{field, severity, message, source_local?, source_gemini?,
     #   source_claude?}, …]. None ou [] si rien à signaler.
     validation_warnings: Optional[List[dict]] = None
+    # Renseigné par le PATCH si le recalcul automatique a ÉCHOUÉ (les
+    # résultats affichés sont alors périmés) — retour Phil 2026-09-08 :
+    # plus d'échec silencieux.
+    recalc_error: Optional[str] = None
 
     created_at: datetime
     updated_at: datetime
@@ -1422,18 +1426,23 @@ async def update_analysis(
     # décocher un poste « finançable prêteur B » sur une analyse déjà
     # faite ne mettait rien à jour.
     patched = set(payload.model_dump(exclude_unset=True).keys())
+    recalc_error: Optional[str] = None
     if (patched & RECALC_INPUT_FIELDS) and rec.analysis_results_json:
         try:
             await _compute_and_store(rec, db)
         except Exception as exc:  # noqa: BLE001
-            log.warning(
-                "recalcul auto après patch échoué (analyse %s): %s",
-                analysis_id, exc,
+            recalc_error = f"{type(exc).__name__}: {exc}"[:500]
+            log.error(
+                "recalcul auto après patch échoué (analyse %s, champs %s): %s",
+                analysis_id, sorted(patched), exc, exc_info=True,
             )
 
     await db.commit()
     await db.refresh(rec)
-    return await get_analysis(analysis_id, db, user)
+    out = await get_analysis(analysis_id, db, user)
+    if recalc_error:
+        out.recalc_error = recalc_error
+    return out
 
 
 @router.delete(
